@@ -1,334 +1,597 @@
-import sqlite3
+import argparse
+import base64
 import datetime
 import logging
 import os
-import base64
-from io import BytesIO
+import sqlite3
 from collections import defaultdict
-import matplotlib.pyplot as plt
-from weasyprint import HTML
+from io import BytesIO
 
-# ================= 配置区 =================
-DB_FILE = 'alerts.db'
-REPORT_FILENAME = 'weekly_inspection_report_custom.pdf'
-TOP_N_ALERTS = 3
-TOTAL_INTEGRATED_SYSTEMS = 12  # 产投目前接入的系统总数
 
-# 中文字体配置 (确保绘图不乱码)
-plt.rcParams['font.sans-serif'] = ['SimHei', 'WenQuanYi Micro Hei', 'DejaVu Sans'] 
-plt.rcParams['axes.unicode_minus'] = False
-# =========================================
+DB_FILE = "alerts.db"
+TABLE_NAME = "weekly_alerts"
+DEFAULT_PDF_FILE = "weekly_inspection_report_custom.pdf"
+DEFAULT_HTML_FILE = "weekly_inspection_report_custom.html"
+DEFAULT_TOP_N = 10
+DEFAULT_STALE_DAYS = 7
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
-def get_weekly_alerts(start_date_str=None, end_date_str=None):
-    """查询指定日期范围的数据及趋势"""
+
+def get_matplotlib_pyplot():
+    try:
+        os.makedirs(".matplotlib", exist_ok=True)
+        os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".matplotlib"))
+        os.environ.setdefault("MPLBACKEND", "Agg")
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError("缺少 matplotlib，请先安装后再生成周报。") from exc
+
+    plt.rcParams["font.sans-serif"] = ["SimHei", "WenQuanYi Micro Hei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+    return plt
+
+
+def get_weasyprint_html():
+    try:
+        from weasyprint import HTML
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError("缺少 WeasyPrint，请先安装后再导出 PDF。") from exc
+    except OSError as exc:
+        raise RuntimeError(
+            "WeasyPrint 已安装，但系统缺少 GTK/Pango 等底层依赖，当前机器暂时无法直接导出 PDF。"
+        ) from exc
+
+    return HTML
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="生成周度告警行动简报")
+    parser.add_argument("--start", default="", help="开始日期，格式如 2026-05-01")
+    parser.add_argument("--end", default="", help="结束日期，格式如 2026-05-07")
+    parser.add_argument("--days", type=int, default=7, help="未指定开始/结束日期时，默认统计最近 N 天")
+    parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N, help="Top 清单展示条数")
+    parser.add_argument("--stale-days", type=int, default=DEFAULT_STALE_DAYS, help="长期未恢复判定阈值，单位天")
+    parser.add_argument("--output-format", choices=["html", "pdf", "both"], default="pdf", help="输出格式")
+    parser.add_argument("--html-file", default="", help="自定义 HTML 输出文件名")
+    parser.add_argument("--pdf-file", default="", help="自定义 PDF 输出文件名")
+    return parser.parse_args()
+
+
+def normalize_date(date_text):
+    return date_text.strip().replace(".", "-").replace("/", "-")
+
+
+def parse_date(date_text):
+    return datetime.datetime.strptime(normalize_date(date_text), "%Y-%m-%d")
+
+
+def build_date_range(args):
+    if args.start and args.end:
+        start_dt = parse_date(args.start).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = parse_date(args.end).replace(hour=23, minute=59, second=59, microsecond=0)
+        return start_dt, end_dt
+
+    if args.start or args.end:
+        raise ValueError("开始日期和结束日期需要同时提供。")
+
+    end_dt = datetime.datetime.now().replace(microsecond=0)
+    start_dt = (end_dt - datetime.timedelta(days=args.days)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_dt, end_dt
+
+
+def get_table_columns(cursor, table_name):
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return {row[1] for row in cursor.fetchall()}
+
+
+def format_percent(numerator, denominator):
+    if not denominator:
+        return "-"
+    return f"{round(numerator / denominator * 100, 1)}%"
+
+
+def build_trend_chart(trend_data, start_dt, end_dt):
+    plt = get_matplotlib_pyplot()
+    day_labels = []
+    counts = []
+    current_dt = start_dt
+
+    while current_dt.date() <= end_dt.date():
+        label = current_dt.strftime("%m-%d")
+        day_labels.append(label)
+        counts.append(trend_data.get(label, 0))
+        current_dt += datetime.timedelta(days=1)
+
+    positions = list(range(len(day_labels)))
+    average_count = round(sum(counts) / len(counts), 1) if counts else 0
+
+    plt.figure(figsize=(10.5, 3.5))
+    bars = plt.bar(positions, counts, color="#b5651d", alpha=0.82, width=0.58)
+    plt.plot(positions, counts, color="#244a68", linewidth=2, marker="o", markersize=4)
+    plt.axhline(average_count, color="#6c757d", linestyle="--", linewidth=1.2)
+    plt.xticks(positions, day_labels)
+    plt.title("本周告警趋势", fontsize=12, pad=10)
+    plt.grid(axis="y", linestyle="--", alpha=0.25)
+
+    for bar in bars:
+        height = bar.get_height()
+        if height > 0:
+            plt.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height + 0.2,
+                f"{int(height)}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+
+    buffer = BytesIO()
+    plt.savefig(buffer, format="png", bbox_inches="tight", dpi=110)
+    plt.close()
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def fetch_weekly_report(start_dt, end_dt, top_n, stale_days):
     if not os.path.exists(DB_FILE):
-        logging.warning(f"数据库文件 {DB_FILE} 不存在")
-        return [], {}, (None, None), {}
+        raise FileNotFoundError(f"数据库文件不存在: {DB_FILE}")
 
-    # 日期解析逻辑
-    if start_date_str and end_date_str:
-        start_dt = datetime.datetime.strptime(start_date_str, '%Y.%m.%d')
-        end_dt = datetime.datetime.strptime(end_date_str, '%Y.%m.%d').replace(hour=23, minute=59, second=59)
-    else:
-        end_dt = datetime.datetime.now()
-        start_dt = end_dt - datetime.timedelta(days=7)
+    start_fmt = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_fmt = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    start_fmt = start_dt.strftime('%Y-%m-%d %H:%M:%S')
-    end_fmt = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+    cursor = conn.cursor()
 
     try:
-        # 1. 查询明细
-        sql = """
-        SELECT t1.cluster, t1.namespace, t1.alert_name, MAX(t1.level) as max_level,
-               MAX(t1.metric_type), t1.target,
-               (SELECT key_info FROM weekly_alerts t2 WHERE t2.cluster = t1.cluster AND t2.namespace = t1.namespace AND t2.alert_name = t1.alert_name AND t2.target = t1.target ORDER BY t2.starts_at DESC LIMIT 1),
-               (SELECT detail_info FROM weekly_alerts t3 WHERE t3.cluster = t1.cluster AND t3.namespace = t1.namespace AND t3.alert_name = t1.alert_name AND t3.target = t1.target ORDER BY t3.starts_at DESC LIMIT 1),
-               COUNT(*) as frequency, MIN(t1.starts_at), MAX(t1.starts_at)
-        FROM weekly_alerts t1
-        WHERE t1.created_at BETWEEN ? AND ?
-          AND COALESCE(t1.first_status, 'firing') = 'firing'
-        GROUP BY t1.cluster, t1.namespace, t1.alert_name, t1.target
-        ORDER BY t1.cluster ASC, max_level DESC, frequency DESC
-        """
-        c.execute(sql, (start_fmt, end_fmt))
-        rows = c.fetchall()
+        columns = get_table_columns(cursor, TABLE_NAME)
+        recovery_metrics_available = {"status", "resolved_at"}.issubset(columns)
 
-        # 2. 查询每日趋势
-        trend_sql = """
-        SELECT strftime('%m-%d', created_at) as day, COUNT(*)
-        FROM weekly_alerts
-        WHERE created_at BETWEEN ? AND ?
-          AND COALESCE(first_status, 'firing') = 'firing'
-        GROUP BY day
-        """
-        c.execute(trend_sql, (start_fmt, end_fmt))
-        trend_data = dict(c.fetchall())
-
-        # 3. 查询恢复统计
-        summary_sql = """
+        detail_sql = f"""
         SELECT
-            SUM(CASE
-                    WHEN created_at BETWEEN ? AND ?
-                     AND COALESCE(first_status, 'firing') = 'firing'
-                    THEN 1 ELSE 0
-                END) as triggered_total,
-            SUM(CASE
-                    WHEN created_at BETWEEN ? AND ?
-                     AND COALESCE(first_status, 'firing') = 'firing'
-                     AND COALESCE(status, 'firing') = 'resolved'
-                    THEN 1 ELSE 0
-                END) as resolved_current_total,
-            SUM(CASE
-                    WHEN created_at BETWEEN ? AND ?
-                     AND COALESCE(first_status, 'firing') = 'firing'
-                     AND COALESCE(status, 'firing') != 'resolved'
-                    THEN 1 ELSE 0
-                END) as unresolved_total,
-            SUM(CASE
-                    WHEN resolved_at BETWEEN ? AND ?
-                     AND COALESCE(first_status, 'firing') = 'firing'
-                    THEN 1 ELSE 0
-                END) as recovered_in_period,
-            AVG(CASE
-                    WHEN resolved_at BETWEEN ? AND ?
-                     AND COALESCE(first_status, 'firing') = 'firing'
-                     AND starts_at IS NOT NULL AND starts_at != ''
-                    THEN (julianday(resolved_at) - julianday(starts_at)) * 24
-                    ELSE NULL
-                END) as avg_recovery_hours
-        FROM weekly_alerts
+            t1.cluster,
+            t1.namespace,
+            t1.alert_name,
+            MAX(CAST(COALESCE(t1.level, '0') AS INTEGER)) as max_level,
+            MAX(t1.metric_type) as metric_type,
+            t1.target,
+            (SELECT key_info
+               FROM {TABLE_NAME} t2
+              WHERE t2.cluster = t1.cluster
+                AND t2.namespace = t1.namespace
+                AND t2.alert_name = t1.alert_name
+                AND t2.target = t1.target
+              ORDER BY t2.starts_at DESC
+              LIMIT 1) as key_info,
+            (SELECT detail_info
+               FROM {TABLE_NAME} t3
+              WHERE t3.cluster = t1.cluster
+                AND t3.namespace = t1.namespace
+                AND t3.alert_name = t1.alert_name
+                AND t3.target = t1.target
+              ORDER BY t3.starts_at DESC
+              LIMIT 1) as detail_info,
+            COUNT(*) as frequency,
+            MIN(t1.starts_at) as first_seen,
+            MAX(t1.starts_at) as last_seen,
+            MAX(t1.created_at) as last_created_at,
+            SUM(CASE WHEN CAST(COALESCE(t1.level, '0') AS INTEGER) = 4 THEN 1 ELSE 0 END) as level4_count,
+            SUM(CASE WHEN CAST(COALESCE(t1.level, '0') AS INTEGER) >= 3 THEN 1 ELSE 0 END) as level3plus_count
+        FROM {TABLE_NAME} t1
+        WHERE t1.created_at BETWEEN ? AND ?
+        GROUP BY t1.cluster, t1.namespace, t1.alert_name, t1.target
+        ORDER BY max_level DESC, frequency DESC, t1.cluster ASC
         """
-        c.execute(
-            summary_sql,
-            (
-                start_fmt, end_fmt,
-                start_fmt, end_fmt,
-                start_fmt, end_fmt,
-                start_fmt, end_fmt,
-                start_fmt, end_fmt,
-            )
-        )
-        summary_row = c.fetchone() or (0, 0, 0, 0, None)
+        cursor.execute(detail_sql, (start_fmt, end_fmt))
+        detail_rows = cursor.fetchall()
+
+        trend_sql = f"""
+        SELECT strftime('%m-%d', created_at) as day, COUNT(*)
+        FROM {TABLE_NAME}
+        WHERE created_at BETWEEN ? AND ?
+        GROUP BY day
+        ORDER BY day
+        """
+        cursor.execute(trend_sql, (start_fmt, end_fmt))
+        trend_data = dict(cursor.fetchall())
+
+        summary_sql = f"""
+        SELECT
+            COUNT(*) as total_alerts,
+            COUNT(DISTINCT cluster) as affected_systems,
+            SUM(CASE WHEN CAST(COALESCE(level, '0') AS INTEGER) = 4 THEN 1 ELSE 0 END) as urgent_total,
+            SUM(CASE WHEN CAST(COALESCE(level, '0') AS INTEGER) >= 3 THEN 1 ELSE 0 END) as severe_total
+        FROM {TABLE_NAME}
+        WHERE created_at BETWEEN ? AND ?
+        """
+        cursor.execute(summary_sql, (start_fmt, end_fmt))
+        summary_row = cursor.fetchone() or (0, 0, 0, 0)
+
         summary = {
-            'triggered_total': summary_row[0] or 0,
-            'resolved_current_total': summary_row[1] or 0,
-            'unresolved_total': summary_row[2] or 0,
-            'recovered_in_period': summary_row[3] or 0,
-            'avg_recovery_hours': round(summary_row[4], 2) if summary_row[4] is not None else None,
+            "total_alerts": summary_row[0] or 0,
+            "affected_systems": summary_row[1] or 0,
+            "urgent_total": summary_row[2] or 0,
+            "severe_total": summary_row[3] or 0,
+            "recovery_metrics_available": recovery_metrics_available,
         }
 
-        return rows, trend_data, (start_dt, end_dt), summary
+        if recovery_metrics_available:
+            recovery_sql = f"""
+            SELECT
+                SUM(CASE
+                        WHEN resolved_at IS NOT NULL AND resolved_at != '' AND resolved_at <= ?
+                        THEN 1 ELSE 0
+                    END) as resolved_by_end,
+                SUM(CASE
+                        WHEN resolved_at IS NULL OR resolved_at = '' OR resolved_at > ?
+                        THEN 1 ELSE 0
+                    END) as unresolved_by_end,
+                AVG(CASE
+                        WHEN resolved_at IS NOT NULL AND resolved_at != '' AND resolved_at <= ?
+                         AND starts_at IS NOT NULL AND starts_at != ''
+                        THEN (julianday(resolved_at) - julianday(starts_at)) * 24
+                        ELSE NULL
+                    END) as avg_recovery_hours
+            FROM {TABLE_NAME}
+            WHERE created_at BETWEEN ? AND ?
+            """
+            cursor.execute(recovery_sql, (end_fmt, end_fmt, end_fmt, start_fmt, end_fmt))
+            recovery_row = cursor.fetchone() or (0, 0, None)
+            summary["resolved_by_end"] = recovery_row[0] or 0
+            summary["unresolved_by_end"] = recovery_row[1] or 0
+            summary["avg_recovery_hours"] = round(recovery_row[2], 2) if recovery_row[2] is not None else None
+            summary["recovery_rate"] = format_percent(summary["resolved_by_end"], summary["total_alerts"])
+        else:
+            summary["resolved_by_end"] = None
+            summary["unresolved_by_end"] = None
+            summary["avg_recovery_hours"] = None
+            summary["recovery_rate"] = "-"
+
+        systems = defaultdict(
+            lambda: {
+                "total": 0,
+                "urgent": 0,
+                "severe": 0,
+                "rows": [],
+            }
+        )
+        alert_names = defaultdict(int)
+
+        for row in detail_rows:
+            cluster = row[0]
+            frequency = row[8]
+            systems[cluster]["total"] += frequency
+            systems[cluster]["urgent"] += row[12]
+            systems[cluster]["severe"] += row[13]
+            systems[cluster]["rows"].append(row)
+            alert_names[row[2]] += frequency
+
+        top_alerts = sorted(detail_rows, key=lambda row: (row[3], row[8]), reverse=True)[:top_n]
+        top_systems = sorted(systems.items(), key=lambda item: item[1]["total"], reverse=True)[:top_n]
+        urgent_focus = [row for row in detail_rows if row[3] >= 3][:top_n]
+
+        stale_rows = []
+        if recovery_metrics_available:
+            stale_sql = f"""
+            SELECT
+                cluster,
+                alert_name,
+                target,
+                CAST(COALESCE(level, '0') AS INTEGER) as level_num,
+                starts_at,
+                CAST(julianday(?) - julianday(starts_at) AS INTEGER) as aging_days,
+                key_info
+            FROM {TABLE_NAME}
+            WHERE starts_at IS NOT NULL
+              AND starts_at != ''
+              AND starts_at <= ?
+              AND (resolved_at IS NULL OR resolved_at = '' OR resolved_at > ?)
+              AND CAST(julianday(?) - julianday(starts_at) AS INTEGER) >= ?
+            ORDER BY aging_days DESC, level_num DESC, starts_at ASC
+            LIMIT ?
+            """
+            threshold_start = (end_dt - datetime.timedelta(days=stale_days)).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                stale_sql,
+                (end_fmt, threshold_start, end_fmt, end_fmt, stale_days, top_n),
+            )
+            stale_rows = cursor.fetchall()
+
+        peak_day = None
+        if trend_data:
+            peak_day = max(trend_data.items(), key=lambda item: item[1])
+
+        report_data = {
+            "start_dt": start_dt,
+            "end_dt": end_dt,
+            "summary": summary,
+            "trend_data": trend_data,
+            "detail_rows": detail_rows,
+            "top_alerts": top_alerts,
+            "top_systems": top_systems,
+            "urgent_focus": urgent_focus,
+            "stale_rows": stale_rows,
+            "systems": systems,
+            "peak_day": peak_day,
+            "stale_days": stale_days,
+        }
+        report_data["action_items"] = build_action_items(report_data)
+        return report_data
     finally:
         conn.close()
 
-def generate_trend_chart(trend_data, start_dt, end_dt):
-    """绘制趋势图"""
-    days, counts = [], []
-    curr = start_dt
-    while curr <= end_dt:
-        d_str = curr.strftime('%m-%d')
-        days.append(d_str)
-        counts.append(trend_data.get(d_str, 0))
-        curr += datetime.timedelta(days=1)
 
-    plt.figure(figsize=(10, 3.5))
-    bars = plt.bar(days, counts, color='#3498db', alpha=0.7, width=0.5)
-    plt.plot(days, counts, marker='o', color='#e74c3c', linewidth=2, markersize=4)
-    plt.title('告警数量每日趋势走势', fontsize=12, pad=10)
-    plt.grid(axis='y', linestyle='--', alpha=0.4)
-    
-    # 在柱状图上方标注数值
-    for bar in bars:
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height + 0.1, f'{int(height)}', ha='center', va='bottom', fontsize=9)
+def build_action_items(report_data):
+    summary = report_data["summary"]
+    top_alerts = report_data["top_alerts"]
+    top_systems = report_data["top_systems"]
+    urgent_focus = report_data["urgent_focus"]
+    stale_rows = report_data["stale_rows"]
+    peak_day = report_data["peak_day"]
 
-    buf = BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
-    plt.close()
-    return base64.b64encode(buf.getvalue()).decode('utf-8')
+    items = []
 
-def generate_html(alerts, trend_data, date_range, summary):
-    start_dt, end_dt = date_range
-    systems_data = defaultdict(lambda: {'total': 0, 'levels': {4:0,3:0,2:0,1:0}, 'rows': []})
-    global_levels = {4:0,3:0,2:0,1:0}
-    global_alert_names = defaultdict(int)
+    if urgent_focus:
+        top_urgent = urgent_focus[0]
+        items.append(
+            f"优先跟进等级较高的告警：{top_urgent[0]} / {top_urgent[2]} / {top_urgent[5]}，本周出现 {top_urgent[8]} 次。"
+        )
 
-    for row in alerts:
-        cluster, alert_name, freq = row[0], row[2], row[8]
-        try: level = int(row[3])
-        except: level = 1
-        systems_data[cluster]['rows'].append(row)
-        systems_data[cluster]['total'] += freq
-        systems_data[cluster]['levels'][level] += freq 
-        global_levels[level] += freq
-        global_alert_names[alert_name] += freq
+    if top_systems:
+        system_name, system_data = top_systems[0]
+        items.append(
+            f"重点关注高频系统：{system_name}，本周累计 {system_data['total']} 次告警，建议确认是否存在批量阈值偏严或资源瓶颈。"
+        )
 
-    # 提取全局告警Top和系统告警Top
-    top_alerts_data = sorted(global_alert_names.items(), key=lambda x: x[1], reverse=True)[:TOP_N_ALERTS]
-    top_systems_data = sorted(systems_data.items(), key=lambda x: x[1]['total'], reverse=True)[:TOP_N_ALERTS]
-    
-    chart_img = generate_trend_chart(trend_data, start_dt, end_dt)
-    recovery_rate = 0
-    if summary['triggered_total']:
-        recovery_rate = round(summary['resolved_current_total'] / summary['triggered_total'] * 100, 1)
+    if peak_day:
+        items.append(
+            f"本周峰值出现在 {peak_day[0]}，当天产生 {peak_day[1]} 次告警，建议回看当天是否存在计划变更、批量发布或平台操作。"
+        )
 
-    # 告警级别映射字典
-    LEVEL_MAP = {4: '紧急', 3: '严重', 2: '中度', 1: '轻微'}
+    if summary["recovery_metrics_available"] and summary["unresolved_by_end"]:
+        items.append(
+            f"截至统计结束仍有 {summary['unresolved_by_end']} 条告警未恢复，需要安排责任人逐项确认是否应清零。"
+        )
 
-    # CSS 样式
+    if stale_rows:
+        oldest = stale_rows[0]
+        items.append(
+            f"存在持续超过 {report_data['stale_days']} 天未恢复的遗留告警：{oldest[0]} / {oldest[1]} / {oldest[2]}，已持续 {oldest[5]} 天。"
+        )
+
+    if not items:
+        items.append("本周未发现需要特别升级处理的事项。")
+
+    return items
+
+
+def generate_html(report_data):
+    summary = report_data["summary"]
+    top_alerts = report_data["top_alerts"]
+    top_systems = report_data["top_systems"]
+    urgent_focus = report_data["urgent_focus"]
+    stale_rows = report_data["stale_rows"]
+    chart_img = build_trend_chart(report_data["trend_data"], report_data["start_dt"], report_data["end_dt"])
+    level_map = {4: "紧急", 3: "严重", 2: "中度", 1: "轻微"}
+
+    avg_daily = round(summary["total_alerts"] / max(1, len(report_data["trend_data"]) or 1), 1) if summary["total_alerts"] else 0
+    recovery_note = (
+        f"截至结束日已恢复 {summary['resolved_by_end']} 条，未恢复 {summary['unresolved_by_end']} 条，恢复率 {summary['recovery_rate']}。"
+        if summary["recovery_metrics_available"]
+        else "当前数据库未保存恢复生命周期数据，本周报先聚焦新增告警热度与重点跟进项。"
+    )
+
     css = """
     <style>
         @page { margin: 1cm; size: A4; }
-        body { font-family: "WenQuanYi Micro Hei", sans-serif; font-size: 11px; color: #333; line-height: 1.4; position: relative; }
-        .report-header { text-align: center; border-bottom: 2px solid #2c3e50; padding-bottom: 10px; margin-bottom: 15px; position: relative; }
-        .header-stats { position: absolute; top: 0; right: 0; text-align: right; background: #f8f9fa; padding: 5px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 10px; }
-        .global-summary-box { background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 20px; }
-        .summary-top-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: bold; }
-        .level-card { background: #fff; padding: 5px; border-radius: 4px; border: 1px solid #e0e0e0; text-align: center; min-width: 70px; }
-        .lifecycle-summary { display:flex; justify-content:space-between; gap:10px; margin-bottom:20px; }
-        .lifecycle-card { flex:1; background:#fff; border:1px solid #ddd; border-radius:6px; padding:10px 12px; }
-        .lifecycle-card .title { color:#666; font-size:10px; margin-bottom:4px; }
-        .lifecycle-card .value { font-size:18px; font-weight:bold; }
-        
-        /* 左右分栏布局，用于展示两个 Top 3 */
-        .top-cards-wrapper { display: flex; justify-content: space-between; margin-bottom: 20px; }
-        .top-alerts-container { width: 48%; border: 1px solid #ebccd1; border-radius: 4px; overflow: hidden; }
-        .top-header { background: #f2dede; color: #a94442; padding: 6px 12px; font-weight: bold; }
-        .top-systems-container { width: 48%; border: 1px solid #bce8f1; border-radius: 4px; overflow: hidden; }
-        .top-systems-header { background: #d9edf7; color: #31708f; padding: 6px 12px; font-weight: bold; }
-        
-        .top-table { width: 100%; border-collapse: collapse; }
-        .top-table td { padding: 6px 12px; border-bottom: 1px solid #eee; }
-        .rank-badge { display: inline-block; width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 50%; color: #fff; font-size: 10px; background: #999; margin-right: 5px; }
-        .rank-1 { background: #d9534f; } .rank-2 { background: #fd7e14; } .rank-3 { background: #ffc107; color:#333; }
-        .progress-bar-bg { background: #eee; height: 5px; width: 60px; border-radius: 3px; display: inline-block; vertical-align: middle; }
-        .progress-bar-fill { background: #d9534f; height: 100%; border-radius: 3px; }
-        .progress-bar-fill-sys { background: #31708f; height: 100%; border-radius: 3px; }
-        
-        .trend-container { text-align: center; margin-bottom: 25px; border: 1px solid #ddd; padding: 10px; border-radius: 6px; }
-        .system-section { margin-bottom: 25px; page-break-inside: avoid; }
-        .system-title { font-size: 14px; font-weight: bold; border-left: 4px solid #007bff; padding-left: 8px; margin-bottom: 8px; }
-        .system-stats { font-size: 11px; background: #fff; padding: 6px 10px; border: 1px dashed #ccc; margin-bottom: 8px; color: #555; }
-        .stat-badge { padding: 1px 5px; border-radius: 3px; color: #fff; font-size: 10px; margin: 0 2px; }
-        .bg-4 { background-color: #d9534f; } .bg-3 { background-color: #fd7e14; } .bg-2 { background-color: #ffc107; color: #333; } .bg-1 { background-color: #17a2b8; }
-        table.detail-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        table.detail-table th, table.detail-table td { border: 1px solid #dee2e6; padding: 5px; word-wrap: break-word; }
-        table.detail-table th { background: #f8f9fa; }
+        body { font-family: "WenQuanYi Micro Hei", sans-serif; font-size: 11px; color: #21303c; background: #f4efe8; }
+        .page { padding: 16px 18px 20px 18px; background: linear-gradient(180deg, #f8f3ea 0%, #fcfbf8 100%); border: 1px solid #d8c9b4; }
+        .header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom: 3px solid #8f4b22; padding-bottom: 12px; margin-bottom: 16px; }
+        .title { font-size: 24px; font-weight: bold; color: #6b2d14; }
+        .subtitle { margin-top: 4px; color: #6f5d49; }
+        .header-note { font-size: 10px; color: #6f5d49; text-align: right; }
+        .section { margin-bottom: 18px; }
+        .section-title { font-size: 15px; font-weight: bold; color: #6b2d14; border-left: 5px solid #b5651d; padding-left: 8px; margin-bottom: 10px; }
+        .cards { display:flex; gap:10px; margin-bottom: 14px; }
+        .card { flex:1; background:#fff; border:1px solid #e2d6c5; border-radius:8px; padding:10px 12px; }
+        .card .label { font-size:10px; color:#7c6a57; margin-bottom:6px; }
+        .card .value { font-size:21px; font-weight:bold; }
+        .c-red { color:#b33a3a; }
+        .c-orange { color:#d3701f; }
+        .c-blue { color:#1f5f85; }
+        .c-green { color:#2f7d4a; }
+        .minor { font-size:10px; color:#7c6a57; margin-top:4px; }
+        .box { background:#fff; border:1px solid #e2d6c5; border-radius:8px; padding:10px 12px; }
+        .bullets { margin:0; padding-left:18px; }
+        .bullets li { margin-bottom:6px; }
+        .table { width:100%; border-collapse:collapse; background:#fff; }
+        .table th, .table td { border:1px solid #e5dbc9; padding:6px 8px; }
+        .table th { background:#efe2cf; color:#69482a; }
+        .pill { display:inline-block; padding:2px 8px; border-radius:999px; color:#fff; font-size:10px; }
+        .pill-4 { background:#b33a3a; }
+        .pill-3 { background:#dd7a28; }
+        .pill-2 { background:#c79a22; }
+        .pill-1 { background:#2b7a90; }
+        .grid { display:flex; gap:12px; }
+        .col { flex:1; }
+        .empty { background:#fff; border:1px dashed #d3c3ac; padding:12px; color:#7c6a57; }
+        .footer { margin-top:18px; font-size:10px; color:#6f5d49; text-align:right; }
     </style>
     """
 
-    html = f"""<html><head><meta charset="UTF-8">{css}</head><body>
-        <div class="report-header">
-            <h1>运维巡检周报</h1>
-            <div class="meta">统计周期: {start_dt.strftime('%Y.%m.%d')} - {end_dt.strftime('%Y.%m.%d')}</div>
-            <div class="header-stats">
-                产投接入总系统: <b>{TOTAL_INTEGRATED_SYSTEMS}</b> 个<br>
-                本周产生告警系统: <b style="color:#d9534f;">{len(systems_data)}</b> 个
-            </div>
-        </div>
-        
-        <div class="global-summary-box">
-            <div class="summary-top-row"><span>🚨 本周期触发告警总数: <span style="color:#d9534f; font-size:14px;">{summary['triggered_total']}</span> 次</span></div>
-            <div style="display:flex; justify-content: space-around;">
-                <div class="level-card" style="border-bottom:3px solid #d9534f;">紧急: {global_levels[4]}</div>
-                <div class="level-card" style="border-bottom:3px solid #fd7e14;">严重: {global_levels[3]}</div>
-                <div class="level-card" style="border-bottom:3px solid #ffc107;">中度: {global_levels[2]}</div>
-                <div class="level-card" style="border-bottom:3px solid #17a2b8;">轻微: {global_levels[1]}</div>
-            </div>
-        </div>
+    html = [
+        f"<html><head><meta charset='UTF-8'>{css}</head><body><div class='page'>",
+        "<div class='header'>",
+        "<div>",
+        "<div class='title'>周度告警行动简报</div>",
+        f"<div class='subtitle'>统计周期：{report_data['start_dt'].strftime('%Y-%m-%d')} 至 {report_data['end_dt'].strftime('%Y-%m-%d')}</div>",
+        "</div>",
+        "<div class='header-note'>",
+        f"受影响系统：<b>{summary['affected_systems']}</b> 个<br>",
+        f"日均告警：<b>{avg_daily}</b> 次",
+        "</div></div>",
+        "<div class='section'>",
+        "<div class='section-title'>一、本周概览</div>",
+        "<div class='cards'>",
+        f"<div class='card'><div class='label'>本周新增告警数</div><div class='value c-red'>{summary['total_alerts']}</div></div>",
+        f"<div class='card'><div class='label'>紧急告警 Level 4</div><div class='value c-orange'>{summary['urgent_total']}</div></div>",
+        f"<div class='card'><div class='label'>严重及以上 Level 3+</div><div class='value c-blue'>{summary['severe_total']}</div></div>",
+        f"<div class='card'><div class='label'>恢复情况</div><div class='value c-green'>{summary['recovery_rate']}</div><div class='minor'>{'平均恢复 ' + str(summary['avg_recovery_hours']) + ' 小时' if summary['avg_recovery_hours'] is not None else '恢复时长暂不可算'}</div></div>",
+        "</div>",
+        f"<div class='box'>{recovery_note}</div>",
+        "</div>",
+        "<div class='section'>",
+        "<div class='section-title'>二、本周处理重点</div>",
+        "<div class='box'><ul class='bullets'>",
+    ]
 
-        <div class="lifecycle-summary">
-            <div class="lifecycle-card">
-                <div class="title">截至生成时已恢复</div>
-                <div class="value" style="color:#28a745;">{summary['resolved_current_total']}</div>
-            </div>
-            <div class="lifecycle-card">
-                <div class="title">截至生成时未恢复</div>
-                <div class="value" style="color:#d9534f;">{summary['unresolved_total']}</div>
-            </div>
-            <div class="lifecycle-card">
-                <div class="title">本周期内恢复次数</div>
-                <div class="value" style="color:#17a2b8;">{summary['recovered_in_period']}</div>
-            </div>
-            <div class="lifecycle-card">
-                <div class="title">恢复率 / 平均恢复时长</div>
-                <div class="value" style="color:#333;">{recovery_rate}%</div>
-                <div style="font-size:11px; color:#666; margin-top:4px;">{summary['avg_recovery_hours'] if summary['avg_recovery_hours'] is not None else '-'} 小时</div>
-            </div>
-        </div>
+    for item in report_data["action_items"]:
+        html.append(f"<li>{item}</li>")
 
-        <div class="top-cards-wrapper">
-            <div class="top-alerts-container">
-                <div class="top-header">🏆 全局高频告警 Top {TOP_N_ALERTS}</div>
-                <table class="top-table">"""
-    
-    max_f_alert = top_alerts_data[0][1] if top_alerts_data else 1
-    for i, (name, count) in enumerate(top_alerts_data):
-        html += f"""<tr><td style="width:30px;"><span class="rank-badge rank-{i+1}">{i+1}</span></td>
-                    <td><b>{name}</b></td>
-                    <td style="text-align:right; width:100px;"><span style="color:#d9534f;">{count} 次</span>
-                    <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{int(count/max_f_alert*100)}%;"></div></div></td></tr>"""
-    html += """</table></div>
-            
-            <div class="top-systems-container">
-                <div class="top-systems-header">🏢 系统告警总数 Top {TOP_N_ALERTS}</div>
-                <table class="top-table">"""
-                
-    max_f_sys = top_systems_data[0][1]['total'] if top_systems_data else 1
-    for i, (sys_name, data) in enumerate(top_systems_data):
-        sys_count = data['total']
-        html += f"""<tr><td style="width:30px;"><span class="rank-badge rank-{i+1}">{i+1}</span></td>
-                    <td><b>{sys_name}</b></td>
-                    <td style="text-align:right; width:100px;"><span style="color:#31708f;">{sys_count} 次</span>
-                    <div class="progress-bar-bg"><div class="progress-bar-fill-sys" style="width:{int(sys_count/max_f_sys*100)}%;"></div></div></td></tr>"""
-    html += "</table></div></div>"
+    html.extend(
+        [
+            "</ul></div>",
+            "</div>",
+            "<div class='section'>",
+            "<div class='section-title'>三、告警趋势</div>",
+            f"<div class='box'><img src='data:image/png;base64,{chart_img}' style='width:100%;'></div>",
+            "</div>",
+            "<div class='section'>",
+            "<div class='section-title'>四、重点告警清单</div>",
+        ]
+    )
 
-    html += f'<div class="trend-container"><div style="text-align:left; font-weight:bold; margin-bottom:5px;">📊 告警趋势图</div><img src="data:image/png;base64,{chart_img}" style="width:100%;"></div>'
+    if urgent_focus:
+        html.append(
+            "<table class='table'><thead><tr><th>系统</th><th>告警名称</th><th>对象</th><th>级别</th><th>次数</th><th>最近发生</th><th>摘要</th></tr></thead><tbody>"
+        )
+        for row in urgent_focus:
+            level_num = row[3] if row[3] in level_map else 1
+            html.append(
+                "<tr>"
+                f"<td>{row[0]}</td>"
+                f"<td>{row[2]}</td>"
+                f"<td>{row[5]}</td>"
+                f"<td><span class='pill pill-{level_num}'>{level_map.get(level_num, '未知')}</span></td>"
+                f"<td>{row[8]}</td>"
+                f"<td>{str(row[10])[:16]}</td>"
+                f"<td>{row[6] or ''}</td>"
+                "</tr>"
+            )
+        html.append("</tbody></table>")
+    else:
+        html.append("<div class='empty'>本周没有严重及以上告警。</div>")
 
-    # 系统明细
-    for cluster, data in sorted(systems_data.items(), key=lambda x: x[1]['total'], reverse=True):
-        l = data['levels']
-        html += f"""
-        <div class="system-section">
-            <div class="system-title">系统名称：{cluster}</div>
-            <div class="system-stats">
-                <strong>【本周统计】</strong> 告警总数: <b>{data['total']}</b> 次 
-                &nbsp;&nbsp;分布: 
-                <span class="stat-badge bg-4">紧急</span> {l[4]} 
-                <span class="stat-badge bg-3">严重</span> {l[3]} 
-                <span class="stat-badge bg-2">中度</span> {l[2]} 
-                <span class="stat-badge bg-1">轻微</span> {l[1]}
-            </div>
-            <table class="detail-table">
-                <thead><tr><th style="width:20%;">告警名称</th><th style="width:18%;">对象</th><th style="width:10%;">级别</th><th style="width:8%;">频次</th><th style="width:15%;">最近发生</th><th>摘要</th></tr></thead>
-                <tbody>"""
-        for r in data['rows']:
-            # 转换数字为中文
-            level_num = int(r[3]) if str(r[3]).isdigit() else 1
-            level_text = LEVEL_MAP.get(level_num, '未知')
-            
-            html += f"""<tr><td>{r[2]}</td><td>{r[5]}</td>
-                        <td style="text-align:center;"><span class="stat-badge bg-{level_num}">{level_text}</span></td>
-                        <td style="text-align:center;">{r[8]}</td>
-                        <td>{str(r[10])[:16]}</td><td>{r[6] if r[6] else ''}</td></tr>"""
-        html += "</tbody></table></div>"
+    html.extend(
+        [
+            "</div>",
+            "<div class='section'>",
+            "<div class='section-title'>五、高频系统与高频告警</div>",
+            "<div class='grid'>",
+            "<div class='col'>",
+        ]
+    )
 
-    html += "</body></html>"
-    return html
+    if top_systems:
+        html.append("<table class='table'><thead><tr><th>系统</th><th>总数</th><th>紧急</th><th>严重及以上</th></tr></thead><tbody>")
+        for system_name, system_data in top_systems:
+            html.append(
+                "<tr>"
+                f"<td>{system_name}</td>"
+                f"<td>{system_data['total']}</td>"
+                f"<td>{system_data['urgent']}</td>"
+                f"<td>{system_data['severe']}</td>"
+                "</tr>"
+            )
+        html.append("</tbody></table>")
+    else:
+        html.append("<div class='empty'>本周没有系统热度数据。</div>")
+
+    html.extend(["</div>", "<div class='col'>"])
+
+    if top_alerts:
+        html.append("<table class='table'><thead><tr><th>告警名称</th><th>系统</th><th>次数</th><th>级别</th></tr></thead><tbody>")
+        for row in top_alerts:
+            level_num = row[3] if row[3] in level_map else 1
+            html.append(
+                "<tr>"
+                f"<td>{row[2]}</td>"
+                f"<td>{row[0]}</td>"
+                f"<td>{row[8]}</td>"
+                f"<td><span class='pill pill-{level_num}'>{level_map.get(level_num, '未知')}</span></td>"
+                "</tr>"
+            )
+        html.append("</tbody></table>")
+    else:
+        html.append("<div class='empty'>本周没有高频告警数据。</div>")
+
+    html.extend(["</div>", "</div>", "</div>"])
+
+    html.append("<div class='section'><div class='section-title'>六、遗留告警</div>")
+    if summary["recovery_metrics_available"] and stale_rows:
+        html.append(
+            "<table class='table'><thead><tr><th>系统</th><th>告警名称</th><th>对象</th><th>级别</th><th>开始时间</th><th>持续天数</th><th>摘要</th></tr></thead><tbody>"
+        )
+        for row in stale_rows:
+            level_num = row[3] if row[3] in level_map else 1
+            html.append(
+                "<tr>"
+                f"<td>{row[0]}</td>"
+                f"<td>{row[1]}</td>"
+                f"<td>{row[2]}</td>"
+                f"<td><span class='pill pill-{level_num}'>{level_map.get(level_num, '未知')}</span></td>"
+                f"<td>{str(row[4])[:16]}</td>"
+                f"<td>{row[5]}</td>"
+                f"<td>{row[6] or ''}</td>"
+                "</tr>"
+            )
+        html.append("</tbody></table>")
+    elif summary["recovery_metrics_available"]:
+        html.append(f"<div class='empty'>截至统计结束，没有持续超过 {report_data['stale_days']} 天的未恢复告警。</div>")
+    else:
+        html.append("<div class='empty'>当前数据库未保存恢复状态，无法自动识别遗留未清零告警。</div>")
+    html.append("</div>")
+
+    html.append(
+        f"<div class='footer'>生成时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>"
+    )
+    html.append("</div></body></html>")
+    return "".join(html)
+
+
+def write_outputs(html, args):
+    html_file = args.html_file or DEFAULT_HTML_FILE
+    pdf_file = args.pdf_file or DEFAULT_PDF_FILE
+
+    if args.output_format in {"html", "both"}:
+        with open(html_file, "w", encoding="utf-8") as file_obj:
+            file_obj.write(html)
+        print(f"HTML 已生成: {html_file}")
+
+    if args.output_format in {"pdf", "both"}:
+        HTML = get_weasyprint_html()
+        try:
+            HTML(string=html).write_pdf(pdf_file)
+        except OSError as exc:
+            raise RuntimeError(
+                "PDF 导出失败：当前系统缺少 WeasyPrint 所需的本地图形依赖，建议先生成 HTML。"
+            ) from exc
+        print(f"PDF 已生成: {pdf_file}")
+
+
+def main():
+    args = parse_args()
+    start_dt, end_dt = build_date_range(args)
+    report_data = fetch_weekly_report(start_dt, end_dt, args.top_n, args.stale_days)
+    if not report_data["summary"]["total_alerts"]:
+        print("未查询到数据。")
+        return
+
+    html = generate_html(report_data)
+    write_outputs(html, args)
+
 
 if __name__ == "__main__":
-    print("请输入自定义日期范围（例如 2026.2.9），直接回车则统计过去7天")
-    s_in = input("开始日期: ").strip() or None
-    e_in = input("结束日期: ").strip() or None
-    
-    rows, trend, dr, summary = get_weekly_alerts(s_in, e_in)
-    if summary.get('triggered_total', 0) == 0:
-        print("未查询到数据。")
-    else:
-        html = generate_html(rows, trend, dr, summary)
-        HTML(string=html).write_pdf(REPORT_FILENAME)
-        print(f"成功生成: {REPORT_FILENAME}")
+    main()
