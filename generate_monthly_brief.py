@@ -527,7 +527,7 @@ def generate_html(report_data, config_data, top_n):
     if summary["triggered_total"] and summary.get("recovery_metrics_available", False):
         current_recovery_rate = round(summary["current_resolved_total"] / summary["triggered_total"] * 100, 2)
 
-    level_map = {4: "紧急", 3: "严重", 2: "一般严重", 1: "警告"}
+    level_map = {4: "紧急", 3: "严重", 2: "中度", 1: "轻微"}
     overview_sentence = build_overview_sentence(report_data)
     resolved_by_month_end_text = summary["resolved_by_month_end_total"] if summary["resolved_by_month_end_total"] is not None else "-"
     unresolved_by_month_end_text = summary["unresolved_by_month_end_total"] if summary["unresolved_by_month_end_total"] is not None else "-"
@@ -711,7 +711,7 @@ def generate_html(report_data, config_data, top_n):
                 f"<div class='muted'>告警总数：<b>{data['total']}</b>，月末已恢复：<b>{resolved_system_text}</b>，月末未恢复：<b>{unresolved_system_text}</b></div>"
             )
             html_parts.append(
-                f"<div class='minor-note'>级别分布：紧急 {data['levels'][4]} / 严重 {data['levels'][3]} / 一般严重 {data['levels'][2]} / 警告 {data['levels'][1]}；当前未恢复 {current_unresolved_system_text}</div>"
+                f"<div class='minor-note'>级别分布：紧急(4) {data['levels'][4]} / 严重(3) {data['levels'][3]} / 中度(2) {data['levels'][2]} / 轻微(1) {data['levels'][1]}；当前未恢复 {current_unresolved_system_text}</div>"
             )
             html_parts.append(
                 "<table class='data-table' style='margin-top:8px;'><thead><tr><th>告警名称</th><th>对象</th><th>级别</th><th>次数</th><th>月末已恢复</th><th>月末未恢复</th><th>恢复率</th><th>最近发生</th></tr></thead><tbody>"
