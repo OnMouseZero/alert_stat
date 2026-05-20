@@ -326,7 +326,7 @@ def fetch_monthly_report(month_text, exclude_dates, top_n, stale_days):
             ORDER BY aging_days DESC, level DESC, starts_at ASC
             LIMIT 20
             """
-            cursor.execute(stale_sql, [end_fmt, end_fmt, end_fmt, stale_days] + exclude_params)
+            cursor.execute(stale_sql, [end_fmt, end_fmt, end_fmt, end_fmt, stale_days] + exclude_params)
             stale_rows = cursor.fetchall()
 
         summary = {
