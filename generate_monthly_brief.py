@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--month", default=get_previous_month(), help="统计月份，格式如 2026-04")
     parser.add_argument("--exclude-dates", default="", help="排除日期，逗号分隔，例如 2026-04-04,2026-04-05")
     parser.add_argument("--config", default=DEFAULT_CONFIG_FILE, help="月报配置文件路径")
-    parser.add_argument("--output-format", choices=["html", "pdf", "both"], default="both", help="输出格式")
+    parser.add_argument("--output-format", choices=["html", "pdf", "both"], default="html", help="输出格式")
     parser.add_argument("--html-file", default="", help="自定义 HTML 输出文件名")
     parser.add_argument("--pdf-file", default="", help="自定义 PDF 输出文件名")
     parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N, help="高频告警展示条数")
