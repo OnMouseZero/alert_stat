@@ -1,0 +1,39 @@
+{
+  "report_title": "2026年4月份监控告警信息统计简报",
+  "reporter": "数据专班运维组",
+  "generated_date": "2026-05-20",
+  "stale_days_threshold": 7,
+  "exclude_dates": [],
+  "overview_points": [
+    "当前主要监控各系统服务器运行状态。",
+    "当前监控了云平台服务器、网络设备、部分应用系统以及核心业务接口。",
+    "本文件用于补充月报中的监控范围说明、专项背景和计划内变更说明。"
+  ],
+  "system_inventory": [
+    {
+      "system": "ZStack-xc",
+      "count": 1804
+    },
+    {
+      "system": "ZStack-X86",
+      "count": 1717
+    },
+    {
+      "system": "财务系统",
+      "count": 373
+    }
+  ],
+  "analysis_responses": [
+    {
+      "system": "ZStack信创集群",
+      "alert_item": "内存使用率和网络流量",
+      "owner": "云平台运维团队",
+      "response": "计算资源不足，现已扩容计算节点。",
+      "response_time": "2026-04-15"
+    }
+  ],
+  "follow_up_notes": [
+    "共性问题：磁盘响应慢和磁盘 IO 利用率高的告警，需要结合云平台升级窗口统一分析。",
+    "专项问题：资源不足导致的高频告警，建议持续跟踪扩容后的告警回落情况。"
+  ]
+}
