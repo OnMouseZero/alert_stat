@@ -1,0 +1,15 @@
+2026-05-21 10:06:36,977 | INFO | 日志初始化完成，日志文件: D:\codexProject\alert_stat\check_level4.log
+2026-05-21 10:06:36,977 | INFO | 启动参数：once=True, interval=600, lookback_hours=48, dry_run=True, db=D:\codexProject\alert_stat\alerts.db, sent_file=D:\codexProject\alert_stat\sent_level4_ids.txt
+2026-05-21 10:06:36,984 | INFO | 已加载去重记录 1 条: D:\codexProject\alert_stat\sent_level4_ids.txt
+2026-05-21 10:06:36,995 | INFO | 查询到等级4未恢复告警 9 条，数据库=D:\codexProject\alert_stat\alerts.db，回看窗口=48 小时
+2026-05-21 10:06:36,995 | INFO | 本次开始处理，待发送候选=9，数据库=D:\codexProject\alert_stat\alerts.db
+2026-05-21 10:06:36,996 | DEBUG | 跳过已发送告警: alert_id=16356, alert_name=Node磁盘读取延迟偏高||磁盘IO繁忙||有一定的iops吞吐量
+2026-05-21 10:06:36,996 | INFO | DRY RUN 邮件预览: alert_id=16342, subject=[等级4紧急告警] CPU IOwait(5m)
+2026-05-21 10:06:36,996 | INFO | DRY RUN 邮件预览: alert_id=16336, subject=[等级4紧急告警] CPU IOwait(5m)
+2026-05-21 10:06:36,996 | INFO | DRY RUN 邮件预览: alert_id=16307, subject=[等级4紧急告警] 系统应用接口异常
+2026-05-21 10:06:36,997 | INFO | DRY RUN 邮件预览: alert_id=16306, subject=[等级4紧急告警] 系统应用接口异常
+2026-05-21 10:06:36,997 | INFO | DRY RUN 邮件预览: alert_id=16304, subject=[等级4紧急告警] 探测失败或证书无效
+2026-05-21 10:06:36,997 | INFO | DRY RUN 邮件预览: alert_id=16303, subject=[等级4紧急告警] 探测失败或证书无效
+2026-05-21 10:06:36,997 | INFO | DRY RUN 邮件预览: alert_id=16300, subject=[等级4紧急告警] 系统应用接口异常
+2026-05-21 10:06:36,997 | INFO | DRY RUN 邮件预览: alert_id=16299, subject=[等级4紧急告警] 系统应用接口异常
+2026-05-21 10:06:36,997 | INFO | 本次处理完成：发送 8 条，跳过 1 条，去重文件=D:\codexProject\alert_stat\sent_level4_ids.txt
