@@ -7,3 +7,6 @@
 2026-05-21 10:23:22,216 | INFO | 开始执行钉钉值班汇总：slot=afternoon, run_at=2026-05-21 17:00:00, window=2026-05-21 09:00:00 ~ 2026-05-21 16:59:59, db=D:\codexProject\alert_stat\alerts.db, dry_run=True
 2026-05-21 10:23:22,218 | INFO | 统计完成：总数=0, lv4=0, lv3=0, lv2=0, lv1=0
 2026-05-21 10:23:22,218 | INFO | DRY RUN 模式，仅打印 markdown，不发送钉钉
+2026-05-21 10:36:25,554 | INFO | 开始执行钉钉值班汇总：slot=morning, run_at=2026-05-21 09:00:00, window=2026-05-20 17:00:00 ~ 2026-05-21 08:59:59, db=D:\codexProject\alert_stat\alerts.db, dry_run=True
+2026-05-21 10:36:25,555 | INFO | 统计完成：总数=175, lv4=2, lv3=48, lv2=125, lv1=0
+2026-05-21 10:36:25,555 | INFO | DRY RUN 模式，仅打印 markdown，不发送钉钉

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -163,24 +164,22 @@ def fetch_summary(db_path, start_dt, end_dt):
         conn.close()
 
 
-def format_text_table(headers, rows):
-    widths = [len(header) for header in headers]
-    normalized_rows = [[str(cell) for cell in row] for row in rows]
-
-    for row in normalized_rows:
-        for index, cell in enumerate(row):
-            widths[index] = max(widths[index], len(cell))
-
-    def render_row(row_values):
-        return "  ".join(value.ljust(widths[index]) for index, value in enumerate(row_values))
-
-    lines = [render_row(headers), render_row(["-" * width for width in widths])]
-    for row in normalized_rows:
-        lines.append(render_row(row))
-    return "\n".join(lines)
+def format_markdown_table(headers, rows):
+    header_line = "| " + " | ".join(headers) + " |"
+    separator_line = "| " + " | ".join(["---"] * len(headers)) + " |"
+    body_lines = []
+    for row in rows:
+        body_lines.append("| " + " | ".join(str(cell) for cell in row) + " |")
+    return "\n".join([header_line, separator_line] + body_lines)
 
 
-def build_markdown(title, start_dt, end_dt, summary_data):
+def format_window_text(slot, start_dt, end_dt):
+    if slot == "morning":
+        return f"{start_dt.strftime('%Y-%m-%d %H:%M')} - 次日 {end_dt.strftime('%H:%M')}"
+    return f"{start_dt.strftime('%Y-%m-%d %H:%M')} - {end_dt.strftime('%H:%M')}"
+
+
+def build_markdown(slot, title, start_dt, end_dt, summary_data):
     overview_rows = [
         ("告警总数", f"{summary_data['total_count']} 条"),
     ]
@@ -191,26 +190,30 @@ def build_markdown(title, start_dt, end_dt, summary_data):
         (LEVEL_LABELS["1"], f"{summary_data['level_counts']['1']} 条"),
     ]
     hourly_rows = [(item[0], f"{item[1]} 条") for item in summary_data["hourly_distribution"]]
+    stat_time_text = format_window_text(slot, start_dt, end_dt)
 
     markdown_lines = [
         f"## {title}",
         "",
-        f"**统计时间：** {start_dt.strftime('%Y-%m-%d %H:%M:%S')} - {end_dt.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**统计时间：** {stat_time_text}",
+        "",
+        "---",
         "",
         "### 总体概览",
-        "```text",
-        format_text_table(["指标", "数量"], overview_rows),
-        "```",
+        "",
+        format_markdown_table(["指标", "数量"], overview_rows),
+        "",
+        "---",
         "",
         "### 按等级分布",
-        "```text",
-        format_text_table(["等级", "数量"], level_rows),
-        "```",
+        "",
+        format_markdown_table(["等级", "数量"], level_rows),
+        "",
+        "---",
         "",
         "### 按小时分布",
-        "```text",
-        format_text_table(["时间", "告警数"], hourly_rows),
-        "```",
+        "",
+        format_markdown_table(["时间", "告警数"], hourly_rows),
     ]
     return "\n".join(markdown_lines)
 
@@ -249,6 +252,8 @@ def send_to_dingtalk(webhook, title, markdown_text):
 def main():
     args = parse_args()
     setup_logging(args.log_file, args.log_level)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
 
     now_dt = parse_run_at(args.run_at)
     slot = resolve_slot(args.slot, now_dt)
@@ -265,7 +270,7 @@ def main():
     )
 
     summary_data = fetch_summary(args.db_path, start_dt, end_dt)
-    markdown_text = build_markdown(title, start_dt, end_dt, summary_data)
+    markdown_text = build_markdown(slot, title, start_dt, end_dt, summary_data)
 
     logger.info(
         "统计完成：总数=%s, lv4=%s, lv3=%s, lv2=%s, lv1=%s",
