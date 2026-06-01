@@ -23,7 +23,8 @@ SMTP_PORT = 465
 FROM_EMAIL = "monitor@cdscwl.cn"
 SMTP_USER = "monitor@cdscwl.cn"
 SMTP_PASS = "xdaZVclOj7RrB6nw"
-TO_EMAIL = "liud@cdscwl.cn"
+TO_EMAILS_RAW = os.getenv("ALERT_LEVEL4_TO_EMAILS", "liud@cdscwl.cn")
+TO_EMAILS = [item.strip() for item in TO_EMAILS_RAW.split(",") if item.strip()]
 
 logger = logging.getLogger("check_level4")
 
@@ -169,14 +170,14 @@ def send_mail(row, dry_run=False):
     msg = MIMEText(html, "html", "utf-8")
     msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = FROM_EMAIL
-    msg["To"] = TO_EMAIL
+    msg["To"] = ", ".join(TO_EMAILS)
 
     server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15)
     server.login(SMTP_USER, SMTP_PASS)
-    server.sendmail(FROM_EMAIL, [TO_EMAIL], msg.as_string())
+    server.sendmail(FROM_EMAIL, TO_EMAILS, msg.as_string())
     server.quit()
 
-    logger.info("邮件发送成功: alert_id=%s, subject=%s, to=%s", alert_id, subject, TO_EMAIL)
+    logger.info("邮件发送成功: alert_id=%s, subject=%s, to=%s", alert_id, subject, ",".join(TO_EMAILS))
 
 
 def run_once(args):
