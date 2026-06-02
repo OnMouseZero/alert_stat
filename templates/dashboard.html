@@ -403,14 +403,6 @@
         <div>
           <p class="eyebrow">Alert Dashboard</p>
           <h1>{{ selected_day_label }} 告警看板</h1>
-          <p class="hero-note">
-            展示所选日期的告警总量、恢复情况、系统分布，以及更早之前到现在仍未恢复的历史告警。
-            当天是否已恢复，按当前数据库中的 <span class="mono">status / resolved_at</span> 实时判断。
-          </p>
-          <p class="hero-note">
-            恢复/未恢复统计口径从 <span class="mono">{{ recovery_stats_start_text }}</span> 开始生效。
-            该日期之前的历史告警仅做展示，不纳入未恢复统计，也不会进入历史遗留未恢复清单。
-          </p>
         </div>
         <div class="toolbar">
           <form method="get" action="/dashboard">
