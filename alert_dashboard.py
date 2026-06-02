@@ -1,17 +1,22 @@
 import datetime
+import hmac
 import logging
 import os
 import sqlite3
+from functools import wraps
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, redirect, render_template, request, session, url_for
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = str(Path(os.getenv("ALERT_DB_PATH", str(BASE_DIR / "alerts.db"))))
 PORT = int(os.getenv("ALERT_DASHBOARD_PORT", "5002"))
 RECOVERY_STATS_START_TEXT = os.getenv("ALERT_RECOVERY_STATS_START", "2026-06-01")
+LOGIN_USERNAME = "admin"
+LOGIN_PASSWORD = "Admin@123!"
+SECRET_KEY = "alert-dashboard-fixed-secret-key"
 LOG_DIR = Path(os.getenv("ALERT_DASHBOARD_LOG_DIR", str(BASE_DIR / "logs")))
 LOG_FILE = Path(os.getenv("ALERT_DASHBOARD_LOG_FILE", str(LOG_DIR / "alert_dashboard.log")))
 LOG_LEVEL = os.getenv("ALERT_DASHBOARD_LOG_LEVEL", "INFO").upper()
@@ -50,6 +55,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.secret_key = SECRET_KEY
 
 
 def get_db_connection():
@@ -77,6 +83,21 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+
+
+def is_authenticated():
+    return bool(session.get("logged_in"))
+
+
+def login_required(view_func):
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        if is_authenticated():
+            return view_func(*args, **kwargs)
+        next_url = request.full_path if request.query_string else request.path
+        return redirect(url_for("login", next=next_url))
+
+    return wrapped
 
 
 def parse_dashboard_date(raw_value):
@@ -252,8 +273,46 @@ def health_check():
     return "dashboard alive", 200
 
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error_message = ""
+    next_url = request.args.get("next", "").strip()
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        next_url = request.form.get("next", "").strip()
+
+        username_ok = hmac.compare_digest(username, LOGIN_USERNAME)
+        password_ok = hmac.compare_digest(password, LOGIN_PASSWORD)
+        if username_ok and password_ok:
+            session["logged_in"] = True
+            session["username"] = LOGIN_USERNAME
+            logger.info("登录成功: username=%s", username)
+            if next_url and next_url.startswith("/"):
+                return redirect(next_url)
+            return redirect(url_for("dashboard"))
+
+        logger.warning("登录失败: username=%s", username)
+        error_message = "账号或密码错误"
+
+    if is_authenticated():
+        return redirect(url_for("dashboard"))
+
+    return render_template("login.html", error_message=error_message, next_url=next_url)
+
+
+@app.route("/logout", methods=["GET"])
+def logout():
+    username = session.get("username", "")
+    session.clear()
+    logger.info("退出登录: username=%s", username or "-")
+    return redirect(url_for("login"))
+
+
 @app.route("/", methods=["GET"])
 @app.route("/dashboard", methods=["GET"])
+@login_required
 def dashboard():
     target_date = parse_dashboard_date(request.args.get("date", ""))
     logger.info("打开告警看板: date=%s", target_date.strftime("%Y-%m-%d"))
@@ -261,6 +320,7 @@ def dashboard():
 
 
 @app.route("/remarks", methods=["POST"])
+@login_required
 def save_remark():
     alert_id = request.form.get("alert_id", "").strip()
     remark = request.form.get("remark", "").strip()
