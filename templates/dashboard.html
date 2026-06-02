@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>告警看板</title>
+  <style>
+    :root {
+      --bg: #f4efe8;
+      --panel: rgba(255, 252, 247, 0.92);
+      --panel-strong: #fffdf9;
+      --text: #2a2118;
+      --muted: #6b5b4d;
+      --line: rgba(92, 62, 33, 0.14);
+      --accent: #b24a2c;
+      --accent-soft: rgba(178, 74, 44, 0.12);
+      --ok: #2c7a57;
+      --ok-soft: rgba(44, 122, 87, 0.12);
+      --warn: #b7791f;
+      --warn-soft: rgba(183, 121, 31, 0.14);
+      --danger: #bf2f45;
+      --danger-soft: rgba(191, 47, 69, 0.12);
+      --shadow: 0 18px 40px rgba(94, 65, 38, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(215, 150, 84, 0.18), transparent 32%),
+        radial-gradient(circle at top right, rgba(189, 79, 52, 0.18), transparent 30%),
+        linear-gradient(180deg, #f8f3ed 0%, var(--bg) 100%);
+    }
+
+    .page {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 18px;
+      margin-bottom: 24px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.76), rgba(255, 248, 241, 0.96)),
+        linear-gradient(120deg, rgba(178, 74, 44, 0.06), rgba(44, 122, 87, 0.06));
+      box-shadow: var(--shadow);
+    }
+
+    .hero-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+      align-items: start;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.05;
+    }
+
+    .hero-note {
+      max-width: 720px;
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .toolbar form {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .toolbar label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    input[type="date"] {
+      min-width: 170px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    button,
+    .link-button {
+      padding: 12px 16px;
+      border: none;
+      border-radius: 14px;
+      background: var(--text);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 0.16s ease, opacity 0.16s ease;
+    }
+
+    .link-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(42, 33, 24, 0.08);
+      color: var(--text);
+    }
+
+    button:hover,
+    .link-button:hover {
+      transform: translateY(-1px);
+      opacity: 0.94;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .summary-card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: var(--panel);
+      box-shadow: 0 10px 24px rgba(94, 65, 38, 0.06);
+    }
+
+    .summary-card .label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .summary-card .value {
+      margin-top: 10px;
+      font-size: clamp(26px, 4vw, 34px);
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .summary-card.total .value { color: var(--text); }
+    .summary-card.resolved .value { color: var(--ok); }
+    .summary-card.unresolved .value { color: var(--danger); }
+    .summary-card.level4 .value { color: var(--danger); }
+    .summary-card.level3 .value { color: var(--warn); }
+    .summary-card.level2 .value { color: var(--accent); }
+    .summary-card.level1 .value { color: #5e6d8d; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1.05fr 2fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    .panel {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-title {
+      margin: 0 0 6px;
+      font-size: 21px;
+    }
+
+    .panel-subtitle {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .cluster-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .cluster-item {
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.62);
+    }
+
+    .cluster-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .cluster-name {
+      font-weight: 700;
+      line-height: 1.4;
+    }
+
+    .cluster-total {
+      color: var(--accent);
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .cluster-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .pill.ok {
+      background: var(--ok-soft);
+      color: var(--ok);
+    }
+
+    .pill.warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .pill.danger {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .empty {
+      padding: 18px;
+      border: 1px dashed var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.48);
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel-strong);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 1080px;
+    }
+
+    th,
+    td {
+      padding: 14px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: #fbf6ef;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      z-index: 1;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .status-text.resolved {
+      color: var(--ok);
+      font-weight: 700;
+    }
+
+    .status-text.firing {
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    .level-badge {
+      display: inline-flex;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      background: rgba(94, 109, 141, 0.12);
+      color: #4b5c7d;
+    }
+
+    .level-badge.level-4 {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .level-badge.level-3 {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .level-badge.level-2 {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .mono {
+      font-family: "Consolas", "SFMono-Regular", monospace;
+      font-size: 12px;
+    }
+
+    .footer-note {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .remark-form {
+      display: grid;
+      gap: 8px;
+      min-width: 260px;
+    }
+
+    .remark-form textarea {
+      width: 100%;
+      min-height: 78px;
+      resize: vertical;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--text);
+      font: inherit;
+      line-height: 1.5;
+    }
+
+    .remark-form .remark-meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .remark-form .remark-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .remark-form .remark-actions button {
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-size: 12px;
+    }
+
+    @media (max-width: 1180px) {
+      .summary-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        padding: 18px 14px 36px;
+      }
+
+      .hero,
+      .panel {
+        border-radius: 20px;
+      }
+
+      .summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .hero-top {
+        flex-direction: column;
+      }
+
+      .toolbar {
+        justify-content: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <p class="eyebrow">Alert Dashboard</p>
+          <h1>{{ selected_day_label }} 告警看板</h1>
+          <p class="hero-note">
+            展示所选日期的告警总量、恢复情况、系统分布，以及更早之前到现在仍未恢复的历史告警。
+            当天是否已恢复，按当前数据库中的 <span class="mono">status / resolved_at</span> 实时判断。
+          </p>
+        </div>
+        <div class="toolbar">
+          <form method="get" action="/dashboard">
+            <div>
+              <label for="date">查看日期</label><br>
+              <input id="date" type="date" name="date" value="{{ selected_date_text }}" max="{{ today_text }}">
+            </div>
+            <button type="submit">刷新看板</button>
+            <a class="link-button" href="/dashboard?date={{ today_text }}">回到今天</a>
+          </form>
+        </div>
+      </div>
+
+      <div class="summary-grid">
+        <div class="summary-card total">
+          <div class="label">当天总告警</div>
+          <div class="value">{{ summary.total_count }}</div>
+        </div>
+        <div class="summary-card resolved">
+          <div class="label">当天已恢复</div>
+          <div class="value">{{ summary.resolved_count }}</div>
+        </div>
+        <div class="summary-card unresolved">
+          <div class="label">当天未恢复</div>
+          <div class="value">{{ summary.unresolved_count }}</div>
+        </div>
+        <div class="summary-card level4">
+          <div class="label">Lv.4</div>
+          <div class="value">{{ summary.level4_count }}</div>
+        </div>
+        <div class="summary-card level3">
+          <div class="label">Lv.3</div>
+          <div class="value">{{ summary.level3_count }}</div>
+        </div>
+        <div class="summary-card level2">
+          <div class="label">Lv.2</div>
+          <div class="value">{{ summary.level2_count }}</div>
+        </div>
+        <div class="summary-card level1">
+          <div class="label">Lv.1</div>
+          <div class="value">{{ summary.level1_count }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <div class="panel">
+        <h2 class="panel-title">系统分布</h2>
+        <p class="panel-subtitle">按当天告警量排序，方便快速看到最热的系统，以及哪些系统当天还有未恢复告警。</p>
+        {% if cluster_summary %}
+        <div class="cluster-list">
+          {% for cluster in cluster_summary %}
+          <div class="cluster-item">
+            <div class="cluster-head">
+              <div class="cluster-name">{{ cluster.cluster or "-" }}</div>
+              <div class="cluster-total">{{ cluster.total_count }} 条</div>
+            </div>
+            <div class="cluster-meta">
+              <span class="pill ok">已恢复 {{ cluster.resolved_count }}</span>
+              <span class="pill {% if cluster.unresolved_count %}danger{% else %}warn{% endif %}">未恢复 {{ cluster.unresolved_count }}</span>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty">这一天没有告警数据。</div>
+        {% endif %}
+      </div>
+
+      <div class="panel">
+        <h2 class="panel-title">当天告警明细</h2>
+        <p class="panel-subtitle">默认优先显示当前未恢复的告警，再显示已恢复告警。最多展示 200 条，便于值班时快速浏览。</p>
+        {% if selected_day_alerts %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>状态</th>
+                <th>等级</th>
+                <th>系统</th>
+                <th>告警名称</th>
+                <th>对象</th>
+                <th>开始时间</th>
+                <th>恢复时间</th>
+                <th>持续时长</th>
+                <th>关键信息</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for alert in selected_day_alerts %}
+              <tr>
+                <td class="mono">{{ alert.id }}</td>
+                <td>
+                  <span class="status-text {% if alert.status == 'resolved' %}resolved{% else %}firing{% endif %}">
+                    {{ alert.status_label }}
+                  </span>
+                </td>
+                <td><span class="level-badge level-{{ alert.level }}">{{ alert.level_label }}</span></td>
+                <td>{{ alert.cluster or "-" }}</td>
+                <td>{{ alert.alert_name or "-" }}</td>
+                <td>{{ alert.target or "-" }}</td>
+                <td class="mono">{{ alert.starts_at or "-" }}</td>
+                <td class="mono">{{ alert.resolved_at or "-" }}</td>
+                <td>{{ alert.duration_text }}</td>
+                <td>{{ alert.key_info or "-" }}</td>
+                <td>
+                  <form class="remark-form" method="post" action="/remarks">
+                    <input type="hidden" name="alert_id" value="{{ alert.id }}">
+                    <input type="hidden" name="date" value="{{ selected_date_text }}">
+                    <textarea name="remark" placeholder="例如：人工登录主机释放内存后恢复，已联系业务确认。">{{ alert.remark or "" }}</textarea>
+                    <div class="remark-meta">
+                      {% if alert.remark_updated_at %}
+                      上次更新：{{ alert.remark_updated_at }}
+                      {% else %}
+                      暂无备注
+                      {% endif %}
+                    </div>
+                    <div class="remark-actions">
+                      <button type="submit">保存备注</button>
+                    </div>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="empty">这一天没有告警明细。</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">历史未恢复告警</h2>
+      <p class="panel-subtitle">这里展示在所选日期之前产生，并且截至当前仍未恢复的告警。适合排查遗留问题和长期未闭环告警。</p>
+      {% if historical_unresolved_alerts %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>等级</th>
+              <th>系统</th>
+              <th>告警名称</th>
+              <th>对象</th>
+              <th>开始时间</th>
+              <th>入库时间</th>
+              <th>持续时长</th>
+              <th>关键信息</th>
+              <th>详细信息</th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for alert in historical_unresolved_alerts %}
+            <tr>
+              <td class="mono">{{ alert.id }}</td>
+              <td><span class="level-badge level-{{ alert.level }}">{{ alert.level_label }}</span></td>
+              <td>{{ alert.cluster or "-" }}</td>
+              <td>{{ alert.alert_name or "-" }}</td>
+              <td>{{ alert.target or "-" }}</td>
+              <td class="mono">{{ alert.starts_at or "-" }}</td>
+              <td class="mono">{{ alert.created_at or "-" }}</td>
+              <td>{{ alert.duration_text }}</td>
+              <td>{{ alert.key_info or "-" }}</td>
+              <td>{{ alert.detail_info or "-" }}</td>
+              <td>
+                <form class="remark-form" method="post" action="/remarks">
+                  <input type="hidden" name="alert_id" value="{{ alert.id }}">
+                  <input type="hidden" name="date" value="{{ selected_date_text }}">
+                  <textarea name="remark" placeholder="补充处理进展、人工跟进情况或风险说明">{{ alert.remark or "" }}</textarea>
+                  <div class="remark-meta">
+                    {% if alert.remark_updated_at %}
+                    上次更新：{{ alert.remark_updated_at }}
+                    {% else %}
+                    暂无备注
+                    {% endif %}
+                  </div>
+                  <div class="remark-actions">
+                    <button type="submit">保存备注</button>
+                  </div>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty">当前没有历史遗留未恢复告警。</div>
+      {% endif %}
+
+      <div class="footer-note">页面生成时间：{{ generated_at }}</div>
+    </section>
+  </div>
+</body>
+</html>

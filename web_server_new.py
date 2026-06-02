@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify
 
 # --- 配置 ---
 BASE_DIR = Path(__file__).resolve().parent
-DB_FILE = 'alerts.db'
+DB_FILE = str(Path(os.getenv("ALERT_DB_PATH", str(BASE_DIR / "alerts.db"))))
 PORT = 5001
 LOG_DIR = Path(os.getenv("ALERT_LOG_DIR", str(BASE_DIR / "logs")))
 LOG_FILE = Path(os.getenv("ALERT_LOG_FILE", str(LOG_DIR / "web_server_new.log")))
@@ -155,6 +155,8 @@ def init_db():
         ensure_column(c, 'weekly_alerts', 'ends_at', 'TEXT')
         ensure_column(c, 'weekly_alerts', 'updated_at', 'TEXT')
         ensure_column(c, 'weekly_alerts', 'resolved_at', 'TEXT')
+        ensure_column(c, 'weekly_alerts', 'remark', 'TEXT')
+        ensure_column(c, 'weekly_alerts', 'remark_updated_at', 'TEXT')
 
         c.execute("UPDATE weekly_alerts SET first_status = 'firing' WHERE first_status IS NULL OR first_status = ''")
         c.execute("UPDATE weekly_alerts SET status = 'firing' WHERE status IS NULL OR status = ''")
@@ -169,6 +171,7 @@ def init_db():
         logger.info(f"✅ 数据库 {DB_FILE} 初始化完成 (Schema 已升级)")
     except Exception as e:
         logger.error(f"❌ 数据库初始化失败: {e}")
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
