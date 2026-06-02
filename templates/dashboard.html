@@ -148,7 +148,7 @@
 
     .summary-grid {
       display: grid;
-      grid-template-columns: repeat(7, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
     }
 
@@ -180,13 +180,6 @@
     .summary-card.level2 .value { color: var(--accent); }
     .summary-card.level1 .value { color: #5e6d8d; }
 
-    .layout {
-      display: grid;
-      grid-template-columns: 1.05fr 2fr;
-      gap: 20px;
-      margin-bottom: 20px;
-    }
-
     .panel {
       padding: 20px;
       border: 1px solid var(--line);
@@ -206,43 +199,6 @@
       color: var(--muted);
       font-size: 13px;
       line-height: 1.6;
-    }
-
-    .cluster-list {
-      display: grid;
-      gap: 12px;
-    }
-
-    .cluster-item {
-      padding: 14px 16px;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: rgba(255, 255, 255, 0.62);
-    }
-
-    .cluster-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-
-    .cluster-name {
-      font-weight: 700;
-      line-height: 1.4;
-    }
-
-    .cluster-total {
-      color: var(--accent);
-      font-weight: 800;
-      white-space: nowrap;
-    }
-
-    .cluster-meta {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
     }
 
     .pill {
@@ -328,6 +284,11 @@
       font-weight: 700;
     }
 
+    .status-text.ignored {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
     .level-badge {
       display: inline-flex;
       padding: 4px 10px;
@@ -363,6 +324,11 @@
       color: var(--muted);
       font-size: 12px;
       text-align: right;
+    }
+
+    .stack {
+      display: grid;
+      gap: 20px;
     }
 
     .remark-form {
@@ -404,10 +370,6 @@
       .summary-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
       }
-
-      .layout {
-        grid-template-columns: 1fr;
-      }
     }
 
     @media (max-width: 760px) {
@@ -421,7 +383,7 @@
       }
 
       .summary-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: 1fr;
       }
 
       .hero-top {
@@ -444,6 +406,10 @@
           <p class="hero-note">
             展示所选日期的告警总量、恢复情况、系统分布，以及更早之前到现在仍未恢复的历史告警。
             当天是否已恢复，按当前数据库中的 <span class="mono">status / resolved_at</span> 实时判断。
+          </p>
+          <p class="hero-note">
+            恢复/未恢复统计口径从 <span class="mono">{{ recovery_stats_start_text }}</span> 开始生效。
+            该日期之前的历史告警仅做展示，不纳入未恢复统计，也不会进入历史遗留未恢复清单。
           </p>
         </div>
         <div class="toolbar">
@@ -471,46 +437,68 @@
           <div class="label">当天未恢复</div>
           <div class="value">{{ summary.unresolved_count }}</div>
         </div>
-        <div class="summary-card level4">
-          <div class="label">Lv.4</div>
-          <div class="value">{{ summary.level4_count }}</div>
-        </div>
-        <div class="summary-card level3">
-          <div class="label">Lv.3</div>
-          <div class="value">{{ summary.level3_count }}</div>
-        </div>
-        <div class="summary-card level2">
-          <div class="label">Lv.2</div>
-          <div class="value">{{ summary.level2_count }}</div>
-        </div>
-        <div class="summary-card level1">
-          <div class="label">Lv.1</div>
-          <div class="value">{{ summary.level1_count }}</div>
-        </div>
       </div>
     </section>
 
-    <section class="layout">
+    <section class="stack">
       <div class="panel">
-        <h2 class="panel-title">系统分布</h2>
-        <p class="panel-subtitle">按当天告警量排序，方便快速看到最热的系统，以及哪些系统当天还有未恢复告警。</p>
-        {% if cluster_summary %}
-        <div class="cluster-list">
-          {% for cluster in cluster_summary %}
-          <div class="cluster-item">
-            <div class="cluster-head">
-              <div class="cluster-name">{{ cluster.cluster or "-" }}</div>
-              <div class="cluster-total">{{ cluster.total_count }} 条</div>
-            </div>
-            <div class="cluster-meta">
-              <span class="pill ok">已恢复 {{ cluster.resolved_count }}</span>
-              <span class="pill {% if cluster.unresolved_count %}danger{% else %}warn{% endif %}">未恢复 {{ cluster.unresolved_count }}</span>
-            </div>
-          </div>
-          {% endfor %}
+        <h2 class="panel-title">历史未恢复告警</h2>
+        <p class="panel-subtitle">这里展示在所选日期之前产生，并且截至当前仍未恢复的告警。适合排查遗留问题和长期未闭环告警。</p>
+        {% if historical_unresolved_alerts %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>等级</th>
+                <th>系统</th>
+                <th>告警名称</th>
+                <th>对象</th>
+                <th>开始时间</th>
+                <th>入库时间</th>
+                <th>持续时长</th>
+                <th>关键信息</th>
+                <th>详细信息</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for alert in historical_unresolved_alerts %}
+              <tr>
+                <td class="mono">{{ alert.id }}</td>
+                <td><span class="level-badge level-{{ alert.level }}">{{ alert.level_label }}</span></td>
+                <td>{{ alert.cluster or "-" }}</td>
+                <td>{{ alert.alert_name or "-" }}</td>
+                <td>{{ alert.target or "-" }}</td>
+                <td class="mono">{{ alert.starts_at or "-" }}</td>
+                <td class="mono">{{ alert.created_at or "-" }}</td>
+                <td>{{ alert.duration_text }}</td>
+                <td>{{ alert.key_info or "-" }}</td>
+                <td>{{ alert.detail_info or "-" }}</td>
+                <td>
+                  <form class="remark-form" method="post" action="/remarks">
+                    <input type="hidden" name="alert_id" value="{{ alert.id }}">
+                    <input type="hidden" name="date" value="{{ selected_date_text }}">
+                    <textarea name="remark" placeholder="补充处理进展、人工跟进情况或风险说明">{{ alert.remark or "" }}</textarea>
+                    <div class="remark-meta">
+                      {% if alert.remark_updated_at %}
+                      上次更新：{{ alert.remark_updated_at }}
+                      {% else %}
+                      暂无备注
+                      {% endif %}
+                    </div>
+                    <div class="remark-actions">
+                      <button type="submit">保存备注</button>
+                    </div>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
         {% else %}
-        <div class="empty">这一天没有告警数据。</div>
+        <div class="empty">当前没有历史遗留未恢复告警。</div>
         {% endif %}
       </div>
 
@@ -540,7 +528,7 @@
               <tr>
                 <td class="mono">{{ alert.id }}</td>
                 <td>
-                  <span class="status-text {% if alert.status == 'resolved' %}resolved{% else %}firing{% endif %}">
+                  <span class="status-text {{ alert.status_css }}">
                     {{ alert.status_label }}
                   </span>
                 </td>
@@ -577,70 +565,9 @@
         {% else %}
         <div class="empty">这一天没有告警明细。</div>
         {% endif %}
-      </div>
-    </section>
 
-    <section class="panel">
-      <h2 class="panel-title">历史未恢复告警</h2>
-      <p class="panel-subtitle">这里展示在所选日期之前产生，并且截至当前仍未恢复的告警。适合排查遗留问题和长期未闭环告警。</p>
-      {% if historical_unresolved_alerts %}
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>等级</th>
-              <th>系统</th>
-              <th>告警名称</th>
-              <th>对象</th>
-              <th>开始时间</th>
-              <th>入库时间</th>
-              <th>持续时长</th>
-              <th>关键信息</th>
-              <th>详细信息</th>
-              <th>备注</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for alert in historical_unresolved_alerts %}
-            <tr>
-              <td class="mono">{{ alert.id }}</td>
-              <td><span class="level-badge level-{{ alert.level }}">{{ alert.level_label }}</span></td>
-              <td>{{ alert.cluster or "-" }}</td>
-              <td>{{ alert.alert_name or "-" }}</td>
-              <td>{{ alert.target or "-" }}</td>
-              <td class="mono">{{ alert.starts_at or "-" }}</td>
-              <td class="mono">{{ alert.created_at or "-" }}</td>
-              <td>{{ alert.duration_text }}</td>
-              <td>{{ alert.key_info or "-" }}</td>
-              <td>{{ alert.detail_info or "-" }}</td>
-              <td>
-                <form class="remark-form" method="post" action="/remarks">
-                  <input type="hidden" name="alert_id" value="{{ alert.id }}">
-                  <input type="hidden" name="date" value="{{ selected_date_text }}">
-                  <textarea name="remark" placeholder="补充处理进展、人工跟进情况或风险说明">{{ alert.remark or "" }}</textarea>
-                  <div class="remark-meta">
-                    {% if alert.remark_updated_at %}
-                    上次更新：{{ alert.remark_updated_at }}
-                    {% else %}
-                    暂无备注
-                    {% endif %}
-                  </div>
-                  <div class="remark-actions">
-                    <button type="submit">保存备注</button>
-                  </div>
-                </form>
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+        <div class="footer-note">页面生成时间：{{ generated_at }}</div>
       </div>
-      {% else %}
-      <div class="empty">当前没有历史遗留未恢复告警。</div>
-      {% endif %}
-
-      <div class="footer-note">页面生成时间：{{ generated_at }}</div>
     </section>
   </div>
 </body>

@@ -11,6 +11,7 @@ from flask import Flask, redirect, render_template, request, url_for
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = str(Path(os.getenv("ALERT_DB_PATH", str(BASE_DIR / "alerts.db"))))
 PORT = int(os.getenv("ALERT_DASHBOARD_PORT", "5002"))
+RECOVERY_STATS_START_TEXT = os.getenv("ALERT_RECOVERY_STATS_START", "2026-06-01")
 LOG_DIR = Path(os.getenv("ALERT_DASHBOARD_LOG_DIR", str(BASE_DIR / "logs")))
 LOG_FILE = Path(os.getenv("ALERT_DASHBOARD_LOG_FILE", str(LOG_DIR / "alert_dashboard.log")))
 LOG_LEVEL = os.getenv("ALERT_DASHBOARD_LOG_LEVEL", "INFO").upper()
@@ -94,6 +95,10 @@ def make_datetime_range(target_date):
     return start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def make_recovery_stats_start():
+    return f"{RECOVERY_STATS_START_TEXT} 00:00:00"
+
+
 def compute_duration_text(start_text, end_text):
     if not start_text:
         return "-"
@@ -119,15 +124,25 @@ def compute_duration_text(start_text, end_text):
     return "".join(parts)
 
 
-def serialize_alert_rows(rows, now_text):
+def serialize_alert_rows(rows, now_text, recovery_stats_start_text):
     records = []
     for row in rows:
         record = dict(row)
         current_status = record.get("status") or "firing"
-        is_resolved = current_status == "resolved"
-        end_text = record.get("resolved_at") or now_text
-        record["status_label"] = "已恢复" if is_resolved else "未恢复"
-        record["duration_text"] = compute_duration_text(record.get("starts_at"), end_text)
+        created_at = record.get("created_at") or ""
+        record["recovery_in_scope"] = created_at >= recovery_stats_start_text
+
+        if record["recovery_in_scope"]:
+            is_resolved = current_status == "resolved"
+            end_text = record.get("resolved_at") or now_text
+            record["status_label"] = "已恢复" if is_resolved else "未恢复"
+            record["status_css"] = "resolved" if is_resolved else "firing"
+            record["duration_text"] = compute_duration_text(record.get("starts_at"), end_text)
+        else:
+            record["status_label"] = "不纳统计"
+            record["status_css"] = "ignored"
+            record["duration_text"] = "-"
+
         record["level_label"] = f"Lv.{record.get('level') or '-'}"
         records.append(record)
     return records
@@ -136,12 +151,13 @@ def serialize_alert_rows(rows, now_text):
 def fetch_dashboard_data(target_date):
     start_text, end_text = make_datetime_range(target_date)
     now_text = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    recovery_stats_start = make_recovery_stats_start()
 
     summary_sql = """
     SELECT
         COUNT(*) AS total_count,
-        SUM(CASE WHEN COALESCE(status, 'firing') = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
-        SUM(CASE WHEN COALESCE(status, 'firing') != 'resolved' THEN 1 ELSE 0 END) AS unresolved_count,
+        SUM(CASE WHEN created_at >= ? AND COALESCE(status, 'firing') = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
+        SUM(CASE WHEN created_at >= ? AND COALESCE(status, 'firing') != 'resolved' THEN 1 ELSE 0 END) AS unresolved_count,
         SUM(CASE WHEN level = '4' THEN 1 ELSE 0 END) AS level4_count,
         SUM(CASE WHEN level = '3' THEN 1 ELSE 0 END) AS level3_count,
         SUM(CASE WHEN level = '2' THEN 1 ELSE 0 END) AS level2_count,
@@ -154,8 +170,8 @@ def fetch_dashboard_data(target_date):
     SELECT
         cluster,
         COUNT(*) AS total_count,
-        SUM(CASE WHEN COALESCE(status, 'firing') = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
-        SUM(CASE WHEN COALESCE(status, 'firing') != 'resolved' THEN 1 ELSE 0 END) AS unresolved_count
+        SUM(CASE WHEN created_at >= ? AND COALESCE(status, 'firing') = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
+        SUM(CASE WHEN created_at >= ? AND COALESCE(status, 'firing') != 'resolved' THEN 1 ELSE 0 END) AS unresolved_count
     FROM weekly_alerts
     WHERE created_at BETWEEN ? AND ?
     GROUP BY cluster
@@ -184,6 +200,7 @@ def fetch_dashboard_data(target_date):
         created_at, updated_at, resolved_at, remark, remark_updated_at
     FROM weekly_alerts
     WHERE created_at < ?
+      AND created_at >= ?
       AND COALESCE(first_status, 'firing') = 'firing'
       AND COALESCE(status, 'firing') != 'resolved'
     ORDER BY CAST(COALESCE(level, '0') AS INTEGER) DESC, created_at ASC
@@ -193,16 +210,16 @@ def fetch_dashboard_data(target_date):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute(summary_sql, (start_text, end_text))
+        cursor.execute(summary_sql, (recovery_stats_start, recovery_stats_start, start_text, end_text))
         summary_row = cursor.fetchone()
 
-        cursor.execute(cluster_summary_sql, (start_text, end_text))
+        cursor.execute(cluster_summary_sql, (recovery_stats_start, recovery_stats_start, start_text, end_text))
         cluster_rows = cursor.fetchall()
 
         cursor.execute(selected_day_alerts_sql, (start_text, end_text))
         selected_day_rows = cursor.fetchall()
 
-        cursor.execute(historical_unresolved_sql, (start_text,))
+        cursor.execute(historical_unresolved_sql, (start_text, recovery_stats_start))
         historical_rows = cursor.fetchall()
     finally:
         conn.close()
@@ -220,12 +237,13 @@ def fetch_dashboard_data(target_date):
     return {
         "summary": summary,
         "cluster_summary": [dict(row) for row in cluster_rows],
-        "selected_day_alerts": serialize_alert_rows(selected_day_rows, now_text),
-        "historical_unresolved_alerts": serialize_alert_rows(historical_rows, now_text),
+        "selected_day_alerts": serialize_alert_rows(selected_day_rows, now_text, recovery_stats_start),
+        "historical_unresolved_alerts": serialize_alert_rows(historical_rows, now_text, recovery_stats_start),
         "selected_date_text": target_date.strftime("%Y-%m-%d"),
         "selected_day_label": target_date.strftime("%Y年%m月%d日"),
         "today_text": datetime.date.today().strftime("%Y-%m-%d"),
         "generated_at": now_text,
+        "recovery_stats_start_text": RECOVERY_STATS_START_TEXT,
     }
 
 
