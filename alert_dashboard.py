@@ -187,19 +187,6 @@ def fetch_dashboard_data(target_date):
     WHERE created_at BETWEEN ? AND ?
     """
 
-    cluster_summary_sql = """
-    SELECT
-        cluster,
-        COUNT(*) AS total_count,
-        SUM(CASE WHEN created_at >= ? AND COALESCE(status, 'firing') = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
-        SUM(CASE WHEN created_at >= ? AND COALESCE(status, 'firing') != 'resolved' THEN 1 ELSE 0 END) AS unresolved_count
-    FROM weekly_alerts
-    WHERE created_at BETWEEN ? AND ?
-    GROUP BY cluster
-    ORDER BY total_count DESC, unresolved_count DESC, cluster ASC
-    LIMIT 12
-    """
-
     selected_day_alerts_sql = """
     SELECT
         id, alert_name, cluster, namespace, level, metric_type, target,
@@ -228,20 +215,29 @@ def fetch_dashboard_data(target_date):
     LIMIT 200
     """
 
+    historical_unresolved_count_sql = """
+    SELECT COUNT(*) AS total_count
+    FROM weekly_alerts
+    WHERE created_at < ?
+      AND created_at >= ?
+      AND COALESCE(first_status, 'firing') = 'firing'
+      AND COALESCE(status, 'firing') != 'resolved'
+    """
+
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(summary_sql, (recovery_stats_start, recovery_stats_start, start_text, end_text))
         summary_row = cursor.fetchone()
 
-        cursor.execute(cluster_summary_sql, (recovery_stats_start, recovery_stats_start, start_text, end_text))
-        cluster_rows = cursor.fetchall()
-
         cursor.execute(selected_day_alerts_sql, (start_text, end_text))
         selected_day_rows = cursor.fetchall()
 
         cursor.execute(historical_unresolved_sql, (start_text, recovery_stats_start))
         historical_rows = cursor.fetchall()
+
+        cursor.execute(historical_unresolved_count_sql, (start_text, recovery_stats_start))
+        historical_unresolved_count_row = cursor.fetchone()
     finally:
         conn.close()
 
@@ -249,6 +245,7 @@ def fetch_dashboard_data(target_date):
         "total_count": summary_row["total_count"] or 0,
         "resolved_count": summary_row["resolved_count"] or 0,
         "unresolved_count": summary_row["unresolved_count"] or 0,
+        "historical_unresolved_count": historical_unresolved_count_row["total_count"] or 0,
         "level4_count": summary_row["level4_count"] or 0,
         "level3_count": summary_row["level3_count"] or 0,
         "level2_count": summary_row["level2_count"] or 0,
@@ -257,7 +254,6 @@ def fetch_dashboard_data(target_date):
 
     return {
         "summary": summary,
-        "cluster_summary": [dict(row) for row in cluster_rows],
         "selected_day_alerts": serialize_alert_rows(selected_day_rows, now_text, recovery_stats_start),
         "historical_unresolved_alerts": serialize_alert_rows(historical_rows, now_text, recovery_stats_start),
         "selected_date_text": target_date.strftime("%Y-%m-%d"),

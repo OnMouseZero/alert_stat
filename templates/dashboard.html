@@ -145,7 +145,7 @@
 
     .summary-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
     }
 
@@ -172,6 +172,7 @@
     .summary-card.total .value { color: var(--text); }
     .summary-card.resolved .value { color: var(--ok); }
     .summary-card.unresolved .value { color: var(--danger); }
+    .summary-card.historical .value { color: #7f4f24; }
     .summary-card.level4 .value { color: var(--danger); }
     .summary-card.level3 .value { color: var(--warn); }
     .summary-card.level2 .value { color: var(--accent); }
@@ -242,7 +243,7 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 1080px;
+      min-width: 940px;
     }
 
     th,
@@ -330,13 +331,15 @@
 
     .remark-form {
       display: grid;
+      grid-template-columns: minmax(180px, 1fr) auto;
       gap: 8px;
-      min-width: 260px;
+      align-items: stretch;
+      min-width: 220px;
     }
 
     .remark-form textarea {
       width: 100%;
-      min-height: 78px;
+      min-height: 62px;
       resize: vertical;
       padding: 10px 12px;
       border: 1px solid var(--line);
@@ -347,25 +350,28 @@
       line-height: 1.5;
     }
 
-    .remark-form .remark-meta {
-      color: var(--muted);
-      font-size: 12px;
+    .remark-form .remark-side {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
     }
 
     .remark-form .remark-actions {
       display: flex;
-      justify-content: flex-end;
+      align-items: center;
     }
 
     .remark-form .remark-actions button {
-      padding: 8px 12px;
+      height: 34px;
+      padding: 0 12px;
       border-radius: 10px;
       font-size: 12px;
+      white-space: nowrap;
     }
 
     @media (max-width: 1180px) {
       .summary-grid {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
 
@@ -424,6 +430,10 @@
           <div class="label">当天未恢复</div>
           <div class="value">{{ summary.unresolved_count }}</div>
         </div>
+        <div class="summary-card historical">
+          <div class="label">历史未恢复</div>
+          <div class="value">{{ summary.historical_unresolved_count }}</div>
+        </div>
       </div>
     </section>
 
@@ -444,7 +454,6 @@
                 <th>开始时间</th>
                 <th>入库时间</th>
                 <th>持续时长</th>
-                <th>关键信息</th>
                 <th>详细信息</th>
                 <th>备注</th>
               </tr>
@@ -460,22 +469,16 @@
                 <td class="mono">{{ alert.starts_at or "-" }}</td>
                 <td class="mono">{{ alert.created_at or "-" }}</td>
                 <td>{{ alert.duration_text }}</td>
-                <td>{{ alert.key_info or "-" }}</td>
                 <td>{{ alert.detail_info or "-" }}</td>
                 <td>
                   <form class="remark-form" method="post" action="/remarks">
                     <input type="hidden" name="alert_id" value="{{ alert.id }}">
                     <input type="hidden" name="date" value="{{ selected_date_text }}">
                     <textarea name="remark" placeholder="补充处理进展、人工跟进情况或风险说明">{{ alert.remark or "" }}</textarea>
-                    <div class="remark-meta">
-                      {% if alert.remark_updated_at %}
-                      上次更新：{{ alert.remark_updated_at }}
-                      {% else %}
-                      暂无备注
-                      {% endif %}
-                    </div>
-                    <div class="remark-actions">
-                      <button type="submit">保存备注</button>
+                    <div class="remark-side">
+                      <div class="remark-actions">
+                        <button type="submit">保存</button>
+                      </div>
                     </div>
                   </form>
                 </td>
@@ -506,7 +509,6 @@
                 <th>开始时间</th>
                 <th>恢复时间</th>
                 <th>持续时长</th>
-                <th>关键信息</th>
                 <th>备注</th>
               </tr>
             </thead>
@@ -526,21 +528,15 @@
                 <td class="mono">{{ alert.starts_at or "-" }}</td>
                 <td class="mono">{{ alert.resolved_at or "-" }}</td>
                 <td>{{ alert.duration_text }}</td>
-                <td>{{ alert.key_info or "-" }}</td>
                 <td>
                   <form class="remark-form" method="post" action="/remarks">
                     <input type="hidden" name="alert_id" value="{{ alert.id }}">
                     <input type="hidden" name="date" value="{{ selected_date_text }}">
                     <textarea name="remark" placeholder="例如：人工登录主机释放内存后恢复，已联系业务确认。">{{ alert.remark or "" }}</textarea>
-                    <div class="remark-meta">
-                      {% if alert.remark_updated_at %}
-                      上次更新：{{ alert.remark_updated_at }}
-                      {% else %}
-                      暂无备注
-                      {% endif %}
-                    </div>
-                    <div class="remark-actions">
-                      <button type="submit">保存备注</button>
+                    <div class="remark-side">
+                      <div class="remark-actions">
+                        <button type="submit">保存</button>
+                      </div>
                     </div>
                   </form>
                 </td>
