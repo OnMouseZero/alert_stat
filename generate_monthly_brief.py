@@ -500,6 +500,19 @@ def build_auto_follow_up_notes(report_data):
     return notes
 
 
+def build_system_inventory_from_report(report_data, top_n=3):
+    systems_data = report_data["systems_data"]
+    ranked_systems = sorted(
+        systems_data.items(),
+        key=lambda item: item[1]["total"],
+        reverse=True,
+    )
+    return [
+        {"system": cluster, "count": data["total"]}
+        for cluster, data in ranked_systems[:top_n]
+    ]
+
+
 def generate_html(report_data, config_data, top_n):
     summary = report_data["summary"]
     systems_data = report_data["systems_data"]
@@ -514,7 +527,7 @@ def generate_html(report_data, config_data, top_n):
     reporter = config_data.get("reporter", DEFAULT_REPORTER)
     generated_date = config_data.get("generated_date", datetime.datetime.now().strftime("%Y-%m-%d"))
     overview_points = config_data.get("overview_points", [])
-    system_inventory = config_data.get("system_inventory", [])
+    system_inventory = build_system_inventory_from_report(report_data, top_n=3)
     analysis_responses = config_data.get("analysis_responses", [])
     follow_up_notes = config_data.get("follow_up_notes") or build_auto_follow_up_notes(report_data)
     trend_chart = generate_trend_chart(report_data["trend_data"], report_data["start_dt"], report_data["end_dt"])
