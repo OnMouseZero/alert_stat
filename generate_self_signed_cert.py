@@ -11,7 +11,11 @@ def safe_unlink(path_obj):
 
 def main():
     parser = argparse.ArgumentParser(description="使用 openssl 生成 self-signed 证书")
-    parser.add_argument("--host", default="localhost", help="证书主机名，默认 localhost")
+    parser.add_argument(
+        "--host",
+        default="localhost",
+        help="证书主机名或地址，多个用英文逗号分隔，例如 10.0.0.179,172.21.8.102",
+    )
     parser.add_argument("--output-dir", default="certs", help="证书输出目录，默认 certs")
     parser.add_argument("--name", default="alert_dashboard", help="证书文件名前缀，默认 alert_dashboard")
     args = parser.parse_args()
@@ -24,11 +28,19 @@ def main():
     crt_path = output_dir / f"{args.name}.crt"
     san_path = output_dir / f"{args.name}.cnf"
 
-    try:
-        ipaddress.ip_address(args.host)
-        san_entry = f"IP.1 = {args.host}"
-    except ValueError:
-        san_entry = f"DNS.1 = {args.host}"
+    host_items = [item.strip() for item in args.host.split(",") if item.strip()]
+    primary_host = host_items[0] if host_items else "localhost"
+    san_lines = []
+    dns_index = 1
+    ip_index = 1
+    for host_item in host_items:
+        try:
+            ipaddress.ip_address(host_item)
+            san_lines.append(f"IP.{ip_index} = {host_item}")
+            ip_index += 1
+        except ValueError:
+            san_lines.append(f"DNS.{dns_index} = {host_item}")
+            dns_index += 1
 
     san_path.write_text(
         "\n".join(
@@ -38,14 +50,14 @@ def main():
                 "x509_extensions=v3_req",
                 "prompt=no",
                 "[req_distinguished_name]",
-                f"CN={args.host}",
+                f"CN={primary_host}",
                 "[v3_req]",
                 "basicConstraints = CA:FALSE",
                 "keyUsage = critical, digitalSignature, keyEncipherment",
                 "extendedKeyUsage = serverAuth",
                 f"subjectAltName = @alt_names",
                 "[alt_names]",
-                san_entry,
+                *san_lines,
             ]
         ),
         encoding="utf-8",

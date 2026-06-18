@@ -61,7 +61,12 @@
       justify-content: space-between;
       gap: 20px;
       flex-wrap: wrap;
-      align-items: start;
+      align-items: flex-start;
+    }
+
+    .hero-copy {
+      min-width: 0;
+      flex: 1 1 520px;
     }
 
     .eyebrow {
@@ -90,15 +95,16 @@
     .toolbar {
       display: flex;
       gap: 12px;
-      flex-wrap: wrap;
       align-items: center;
       justify-content: flex-end;
+      flex: 0 0 auto;
+      min-width: auto;
     }
 
     .toolbar form {
       display: flex;
       gap: 10px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
       justify-content: flex-end;
     }
@@ -127,6 +133,7 @@
       cursor: pointer;
       text-decoration: none;
       transition: transform 0.16s ease, opacity 0.16s ease;
+      white-space: nowrap;
     }
 
     .link-button {
@@ -234,7 +241,9 @@
     }
 
     .table-wrap {
-      overflow: auto;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
       border: 1px solid var(--line);
       border-radius: 18px;
       background: var(--panel-strong);
@@ -270,6 +279,14 @@
 
     tr:last-child td {
       border-bottom: none;
+    }
+
+    td[data-label="详细信息"] {
+      min-width: 320px;
+    }
+
+    td[data-label="备注"] {
+      min-width: 260px;
     }
 
     .status-text.resolved {
@@ -386,15 +403,94 @@
       }
 
       .summary-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
       .hero-top {
         flex-direction: column;
+        justify-content: flex-start;
+        align-items: stretch;
+      }
+
+      .hero-copy {
+        flex: none;
       }
 
       .toolbar {
         justify-content: flex-start;
+        width: 100%;
+        min-width: 0;
+        flex: none;
+      }
+
+      .toolbar form {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        width: 100%;
+        justify-content: stretch;
+      }
+
+      input[type="date"] {
+        grid-column: 1 / -1;
+        width: 100%;
+        min-width: 0;
+      }
+
+      button,
+      .link-button {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .panel-title {
+        font-size: 19px;
+      }
+
+      .panel-subtitle {
+        margin-bottom: 14px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .page {
+        padding: 14px 10px 28px;
+      }
+
+      .hero,
+      .panel {
+        padding: 16px;
+        border-radius: 18px;
+      }
+
+      h1 {
+        font-size: 26px;
+        line-height: 1.12;
+      }
+
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.1em;
+      }
+
+      button,
+      .link-button {
+        width: 100%;
+        min-width: 0;
+        padding: 12px 10px;
+      }
+
+      .summary-grid {
+        gap: 10px;
+      }
+
+      .summary-card {
+        padding: 16px 14px;
+        border-radius: 18px;
+      }
+
+      .summary-card .value {
+        font-size: 24px;
       }
     }
   </style>
@@ -403,7 +499,7 @@
   <div class="page">
     <section class="hero">
       <div class="hero-top">
-        <div>
+        <div class="hero-copy">
           <p class="eyebrow">Alert Dashboard</p>
           <h1>{{ selected_day_label }} 告警看板</h1>
         </div>
@@ -460,16 +556,16 @@
             <tbody>
               {% for alert in historical_unresolved_alerts %}
               <tr>
-                <td class="mono">{{ alert.id }}</td>
-                <td><span class="level-badge level-{{ alert.level }}">{{ alert.level_label }}</span></td>
-                <td>{{ alert.cluster or "-" }}</td>
-                <td>{{ alert.alert_name or "-" }}</td>
-                <td>{{ alert.target or "-" }}</td>
-                <td class="mono">{{ alert.starts_at or "-" }}</td>
-                <td class="mono">{{ alert.created_at or "-" }}</td>
-                <td>{{ alert.duration_text }}</td>
-                <td>{{ alert.detail_info or "-" }}</td>
-                <td>
+                <td class="mono" data-label="ID">{{ alert.id }}</td>
+                <td data-label="等级"><span class="level-badge level-{{ alert.level }}">{{ alert.level_label }}</span></td>
+                <td data-label="系统">{{ alert.cluster or "-" }}</td>
+                <td data-label="告警名称">{{ alert.alert_name or "-" }}</td>
+                <td data-label="对象">{{ alert.target or "-" }}</td>
+                <td class="mono" data-label="开始时间">{{ alert.starts_at or "-" }}</td>
+                <td class="mono" data-label="入库时间">{{ alert.created_at or "-" }}</td>
+                <td data-label="持续时长">{{ alert.duration_text }}</td>
+                <td data-label="详细信息">{{ alert.detail_info or "-" }}</td>
+                <td data-label="备注">
                   <form class="remark-form" method="post" action="/remarks">
                     <input type="hidden" name="alert_id" value="{{ alert.id }}">
                     <input type="hidden" name="date" value="{{ selected_date_text }}">
@@ -514,20 +610,20 @@
             <tbody>
               {% for alert in selected_day_alerts %}
               <tr>
-                <td class="mono">{{ alert.id }}</td>
-                <td>
+                <td class="mono" data-label="ID">{{ alert.id }}</td>
+                <td data-label="状态">
                   <span class="status-text {{ alert.status_css }}">
                     {{ alert.status_label }}
                   </span>
                 </td>
-                <td><span class="level-badge level-{{ alert.level }}">{{ alert.level_label }}</span></td>
-                <td>{{ alert.cluster or "-" }}</td>
-                <td>{{ alert.alert_name or "-" }}</td>
-                <td>{{ alert.target or "-" }}</td>
-                <td class="mono">{{ alert.starts_at or "-" }}</td>
-                <td class="mono">{{ alert.resolved_at or "-" }}</td>
-                <td>{{ alert.duration_text }}</td>
-                <td>
+                <td data-label="等级"><span class="level-badge level-{{ alert.level }}">{{ alert.level_label }}</span></td>
+                <td data-label="系统">{{ alert.cluster or "-" }}</td>
+                <td data-label="告警名称">{{ alert.alert_name or "-" }}</td>
+                <td data-label="对象">{{ alert.target or "-" }}</td>
+                <td class="mono" data-label="开始时间">{{ alert.starts_at or "-" }}</td>
+                <td class="mono" data-label="恢复时间">{{ alert.resolved_at or "-" }}</td>
+                <td data-label="持续时长">{{ alert.duration_text }}</td>
+                <td data-label="备注">
                   <form class="remark-form" method="post" action="/remarks">
                     <input type="hidden" name="alert_id" value="{{ alert.id }}">
                     <input type="hidden" name="date" value="{{ selected_date_text }}">

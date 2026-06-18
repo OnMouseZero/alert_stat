@@ -12,9 +12,6 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = str(Path(os.getenv("ALERT_DB_PATH", str(BASE_DIR / "alerts.db"))))
 PORT = int(os.getenv("ALERT_DASHBOARD_PORT", "5002"))
 RECOVERY_STATS_START_TEXT = os.getenv("ALERT_RECOVERY_STATS_START", "2026-06-01")
-HTTPS_ENABLED = os.getenv("ALERT_DASHBOARD_HTTPS", "1").strip().lower() not in {"0", "false", "no"}
-CERT_FILE = Path(os.getenv("ALERT_DASHBOARD_CERT_FILE", str(BASE_DIR / "certs" / "alert_dashboard.crt")))
-KEY_FILE = Path(os.getenv("ALERT_DASHBOARD_KEY_FILE", str(BASE_DIR / "certs" / "alert_dashboard.key")))
 LOG_DIR = Path(os.getenv("ALERT_DASHBOARD_LOG_DIR", str(BASE_DIR / "logs")))
 LOG_FILE = Path(os.getenv("ALERT_DASHBOARD_LOG_FILE", str(LOG_DIR / "alert_dashboard.log")))
 LOG_LEVEL = os.getenv("ALERT_DASHBOARD_LOG_LEVEL", "INFO").upper()
@@ -81,19 +78,9 @@ def init_db():
     finally:
         conn.close()
 
-def build_ssl_context():
-    if not HTTPS_ENABLED:
-        logger.warning("ALERT_DASHBOARD_HTTPS 已关闭，当前将以 HTTP 模式启动。")
-        return None
 
-    if not CERT_FILE.exists() or not KEY_FILE.exists():
-        raise FileNotFoundError(
-            f"未找到 HTTPS 证书文件，请先准备好证书再启动。cert={CERT_FILE}, key={KEY_FILE}"
-        )
-
-    logger.info("HTTPS 已启用: cert=%s, key=%s", CERT_FILE, KEY_FILE)
-    return str(CERT_FILE), str(KEY_FILE)
-
+# Ensure schema upgrades are applied both for direct execution and Gunicorn import.
+init_db()
 
 def parse_dashboard_date(raw_value):
     if not raw_value:
@@ -302,8 +289,5 @@ def save_remark():
 
 
 if __name__ == "__main__":
-    init_db()
-    ssl_context = build_ssl_context()
-    protocol = "https" if ssl_context else "http"
-    logger.info("🚀 告警看板服务启动，监听协议: %s, 端口: %s, db=%s", protocol, PORT, DB_FILE)
-    app.run(host="0.0.0.0", port=PORT, ssl_context=ssl_context)
+    logger.info("🚀 告警看板服务启动（开发模式），监听协议: http, 端口: %s, db=%s", PORT, DB_FILE)
+    app.run(host="0.0.0.0", port=PORT)
