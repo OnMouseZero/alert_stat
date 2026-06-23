@@ -4,23 +4,18 @@ import datetime
 import json
 import logging
 import os
-import sqlite3
 from collections import defaultdict
 from io import BytesIO
 
+from db_utils import get_db_connection, get_table_columns
 
-DB_FILE = "alerts.db"
+
 TABLE_NAME = "weekly_alerts"
 DEFAULT_CONFIG_FILE = "monthly_report_config.json"
 DEFAULT_REPORTER = "数据专班运维组"
 DEFAULT_TOP_N = 10
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
-
-
-def get_table_columns(cursor, table_name):
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    return {row[1] for row in cursor.fetchall()}
 
 
 def get_matplotlib_pyplot():
@@ -131,270 +126,265 @@ def build_exclude_clause(column_name, exclude_dates):
     if not exclude_dates:
         return "", []
 
-    placeholders = ",".join("?" for _ in exclude_dates)
-    return f" AND substr({column_name}, 1, 10) NOT IN ({placeholders})", exclude_dates
+    placeholders = ",".join(["%s"] * len(exclude_dates))
+    return f" AND DATE({column_name}) NOT IN ({placeholders})", exclude_dates
 
 
 def fetch_monthly_report(month_text, exclude_dates, top_n, stale_days):
-    if not os.path.exists(DB_FILE):
-        raise FileNotFoundError(f"数据库文件不存在: {DB_FILE}")
-
     start_dt, end_dt = get_month_range(month_text)
     start_fmt = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_fmt = end_dt.strftime("%Y-%m-%d %H:%M:%S")
     exclude_sql, exclude_params = build_exclude_clause("t1.created_at", exclude_dates)
 
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
+    conn = get_db_connection()
     try:
-        table_columns = get_table_columns(cursor, TABLE_NAME)
-        has_first_status = "first_status" in table_columns
-        has_status = "status" in table_columns
-        has_resolved_at = "resolved_at" in table_columns
-        recovery_metrics_available = has_status and has_resolved_at
+        with conn.cursor() as cursor:
+            table_columns = get_table_columns(cursor, TABLE_NAME)
+            has_first_status = "first_status" in table_columns
+            has_status = "status" in table_columns
+            has_resolved_at = "resolved_at" in table_columns
+            recovery_metrics_available = has_status and has_resolved_at
 
-        first_status_filter = "COALESCE(t1.first_status, 'firing') = 'firing'" if has_first_status else "1=1"
-        first_status_filter_plain = "COALESCE(first_status, 'firing') = 'firing'" if has_first_status else "1=1"
-        current_resolved_expr = "COALESCE(t1.status, 'firing') = 'resolved'" if has_status else "0=1"
-        current_unresolved_expr = "COALESCE(t1.status, 'firing') != 'resolved'" if has_status else "1=1"
-        current_resolved_expr_plain = "COALESCE(status, 'firing') = 'resolved'" if has_status else "0=1"
-        current_unresolved_expr_plain = "COALESCE(status, 'firing') != 'resolved'" if has_status else "1=1"
-        resolved_by_month_end_expr = (
-            "t1.resolved_at IS NOT NULL AND t1.resolved_at != '' AND t1.resolved_at <= ?"
-            if has_resolved_at else
-            "0=1"
-        )
-        unresolved_by_month_end_expr = (
-            "t1.resolved_at IS NULL OR t1.resolved_at = '' OR t1.resolved_at > ?"
-            if has_resolved_at else
-            "1=1"
-        )
-        resolved_by_month_end_expr_plain = (
-            "resolved_at IS NOT NULL AND resolved_at != '' AND resolved_at <= ?"
-            if has_resolved_at else
-            "0=1"
-        )
-        unresolved_by_month_end_expr_plain = (
-            "resolved_at IS NULL OR resolved_at = '' OR resolved_at > ?"
-            if has_resolved_at else
-            "1=1"
-        )
-        if recovery_metrics_available:
-            detail_recovery_select = f"""
-            SUM(CASE
-                    WHEN {resolved_by_month_end_expr}
-                    THEN 1 ELSE 0
-                END) as resolved_by_month_end_count,
-            SUM(CASE
-                    WHEN {unresolved_by_month_end_expr}
-                    THEN 1 ELSE 0
-                END) as unresolved_by_month_end_count,
-            SUM(CASE WHEN {current_resolved_expr} THEN 1 ELSE 0 END) as current_resolved_count,
-            SUM(CASE WHEN {current_unresolved_expr} THEN 1 ELSE 0 END) as current_unresolved_count
-            """
-            summary_recovery_select = f"""
-            SUM(CASE
-                    WHEN {resolved_by_month_end_expr_plain}
-                    THEN 1 ELSE 0
-                END) as resolved_by_month_end_total,
-            SUM(CASE
-                    WHEN {unresolved_by_month_end_expr_plain}
-                    THEN 1 ELSE 0
-                END) as unresolved_by_month_end_total,
-            SUM(CASE WHEN {current_resolved_expr_plain} THEN 1 ELSE 0 END) as current_resolved_total,
-            SUM(CASE WHEN {current_unresolved_expr_plain} THEN 1 ELSE 0 END) as current_unresolved_total,
-            AVG(CASE
-                    WHEN {resolved_by_month_end_expr_plain}
-                     AND starts_at IS NOT NULL AND starts_at != ''
-                    THEN (julianday(resolved_at) - julianday(starts_at)) * 24
-                    ELSE NULL
-                END) as avg_recovery_hours_by_month_end,
-            """
-        else:
-            detail_recovery_select = """
-            NULL as resolved_by_month_end_count,
-            NULL as unresolved_by_month_end_count,
-            NULL as current_resolved_count,
-            NULL as current_unresolved_count
-            """
-            summary_recovery_select = """
-            NULL as resolved_by_month_end_total,
-            NULL as unresolved_by_month_end_total,
-            NULL as current_resolved_total,
-            NULL as current_unresolved_total,
-            NULL as avg_recovery_hours_by_month_end,
-            """
+            first_status_filter = "COALESCE(t1.first_status, 'firing') = 'firing'" if has_first_status else "1=1"
+            first_status_filter_plain = "COALESCE(first_status, 'firing') = 'firing'" if has_first_status else "1=1"
+            current_resolved_expr = "COALESCE(t1.status, 'firing') = 'resolved'" if has_status else "0=1"
+            current_unresolved_expr = "COALESCE(t1.status, 'firing') != 'resolved'" if has_status else "1=1"
+            current_resolved_expr_plain = "COALESCE(status, 'firing') = 'resolved'" if has_status else "0=1"
+            current_unresolved_expr_plain = "COALESCE(status, 'firing') != 'resolved'" if has_status else "1=1"
+            resolved_by_month_end_expr = (
+                "t1.resolved_at IS NOT NULL AND t1.resolved_at <= %s"
+                if has_resolved_at else
+                "0=1"
+            )
+            unresolved_by_month_end_expr = (
+                "t1.resolved_at IS NULL OR t1.resolved_at > %s"
+                if has_resolved_at else
+                "1=1"
+            )
+            resolved_by_month_end_expr_plain = (
+                "resolved_at IS NOT NULL AND resolved_at <= %s"
+                if has_resolved_at else
+                "0=1"
+            )
+            unresolved_by_month_end_expr_plain = (
+                "resolved_at IS NULL OR resolved_at > %s"
+                if has_resolved_at else
+                "1=1"
+            )
 
-        detail_sql = f"""
-        SELECT
-            t1.cluster,
-            t1.namespace,
-            t1.alert_name,
-            MAX(t1.level) as max_level,
-            MAX(t1.metric_type),
-            t1.target,
-            (SELECT key_info
-               FROM {TABLE_NAME} t2
-              WHERE t2.cluster = t1.cluster
-                AND t2.namespace = t1.namespace
-                AND t2.alert_name = t1.alert_name
-                AND t2.target = t1.target
-              ORDER BY t2.starts_at DESC
-               LIMIT 1),
-            COUNT(*) as frequency,
-            MIN(t1.starts_at),
-            MAX(t1.starts_at),
-            {detail_recovery_select}
-        FROM {TABLE_NAME} t1
-        WHERE t1.created_at BETWEEN ? AND ?
-          AND {first_status_filter}
-          {exclude_sql}
-        GROUP BY t1.cluster, t1.namespace, t1.alert_name, t1.target
-        ORDER BY frequency DESC, max_level DESC, t1.cluster ASC
-        """
-        detail_params = []
-        if has_resolved_at:
-            detail_params.extend([end_fmt, end_fmt])
-        detail_params.extend([start_fmt, end_fmt])
-        detail_params.extend(exclude_params)
-        cursor.execute(detail_sql, detail_params)
-        detail_rows = cursor.fetchall()
+            if recovery_metrics_available:
+                detail_recovery_select = f"""
+                SUM(CASE
+                        WHEN {resolved_by_month_end_expr}
+                        THEN 1 ELSE 0
+                    END) as resolved_by_month_end_count,
+                SUM(CASE
+                        WHEN {unresolved_by_month_end_expr}
+                        THEN 1 ELSE 0
+                    END) as unresolved_by_month_end_count,
+                SUM(CASE WHEN {current_resolved_expr} THEN 1 ELSE 0 END) as current_resolved_count,
+                SUM(CASE WHEN {current_unresolved_expr} THEN 1 ELSE 0 END) as current_unresolved_count
+                """
+                summary_recovery_select = f"""
+                SUM(CASE
+                        WHEN {resolved_by_month_end_expr_plain}
+                        THEN 1 ELSE 0
+                    END) as resolved_by_month_end_total,
+                SUM(CASE
+                        WHEN {unresolved_by_month_end_expr_plain}
+                        THEN 1 ELSE 0
+                    END) as unresolved_by_month_end_total,
+                SUM(CASE WHEN {current_resolved_expr_plain} THEN 1 ELSE 0 END) as current_resolved_total,
+                SUM(CASE WHEN {current_unresolved_expr_plain} THEN 1 ELSE 0 END) as current_unresolved_total,
+                AVG(CASE
+                        WHEN {resolved_by_month_end_expr_plain}
+                         AND starts_at IS NOT NULL
+                        THEN TIMESTAMPDIFF(SECOND, starts_at, resolved_at) / 3600
+                        ELSE NULL
+                    END) as avg_recovery_hours_by_month_end,
+                """
+            else:
+                detail_recovery_select = """
+                NULL as resolved_by_month_end_count,
+                NULL as unresolved_by_month_end_count,
+                NULL as current_resolved_count,
+                NULL as current_unresolved_count
+                """
+                summary_recovery_select = """
+                NULL as resolved_by_month_end_total,
+                NULL as unresolved_by_month_end_total,
+                NULL as current_resolved_total,
+                NULL as current_unresolved_total,
+                NULL as avg_recovery_hours_by_month_end,
+                """
 
-        trend_sql = f"""
-        SELECT strftime('%d', created_at) as day, COUNT(*)
-        FROM {TABLE_NAME}
-        WHERE created_at BETWEEN ? AND ?
-          AND {first_status_filter_plain}
-          {exclude_sql.replace('t1.', '')}
-        GROUP BY day
-        ORDER BY day
-        """
-        cursor.execute(trend_sql, [start_fmt, end_fmt] + exclude_params)
-        trend_data = dict(cursor.fetchall())
-
-        summary_sql = f"""
-        SELECT
-            COUNT(*) as triggered_total,
-            {summary_recovery_select}
-            COUNT(DISTINCT cluster) as active_systems
-        FROM {TABLE_NAME}
-        WHERE created_at BETWEEN ? AND ?
-          AND {first_status_filter_plain}
-          {exclude_sql.replace('t1.', '')}
-        """
-        summary_params = []
-        if recovery_metrics_available:
-            summary_params.extend([end_fmt, end_fmt, end_fmt])
-        summary_params.extend([start_fmt, end_fmt])
-        summary_params.extend(exclude_params)
-        cursor.execute(summary_sql, summary_params)
-        summary_row = cursor.fetchone() or (0, 0, 0, 0, 0, None, 0)
-
-        unresolved_sql = f"""
-        SELECT cluster, alert_name, target, level, starts_at
-        FROM {TABLE_NAME}
-        WHERE created_at BETWEEN ? AND ?
-          AND {first_status_filter_plain}
-          AND {current_unresolved_expr_plain}
-          {exclude_sql.replace('t1.', '')}
-        ORDER BY level DESC, created_at DESC
-        LIMIT 10
-        """
-        unresolved_rows = []
-        if recovery_metrics_available:
-            cursor.execute(unresolved_sql, [start_fmt, end_fmt] + exclude_params)
-            unresolved_rows = cursor.fetchall()
-
-        stale_rows = []
-        if recovery_metrics_available:
-            stale_sql = f"""
+            detail_sql = f"""
             SELECT
-                cluster,
-                alert_name,
-                target,
-                level,
-                starts_at,
-                CAST(julianday(?) - julianday(starts_at) AS INTEGER) as aging_days,
-                key_info
-            FROM {TABLE_NAME}
-            WHERE {first_status_filter_plain}
-              AND starts_at <= ?
-              AND ({unresolved_by_month_end_expr_plain})
-              AND CAST(julianday(?) - julianday(starts_at) AS INTEGER) >= ?
-              {exclude_sql.replace('t1.', '')}
-            ORDER BY aging_days DESC, level DESC, starts_at ASC
-            LIMIT 20
+                t1.cluster,
+                t1.namespace,
+                t1.alert_name,
+                MAX(CAST(COALESCE(t1.level, '0') AS UNSIGNED)) as max_level,
+                MAX(t1.metric_type),
+                t1.target,
+                (SELECT key_info
+                   FROM {TABLE_NAME} t2
+                  WHERE t2.cluster = t1.cluster
+                    AND t2.namespace = t1.namespace
+                    AND t2.alert_name = t1.alert_name
+                    AND t2.target = t1.target
+                  ORDER BY t2.starts_at DESC
+                   LIMIT 1),
+                COUNT(*) as frequency,
+                MIN(t1.starts_at),
+                MAX(t1.starts_at),
+                {detail_recovery_select}
+            FROM {TABLE_NAME} t1
+            WHERE t1.created_at BETWEEN %s AND %s
+              AND {first_status_filter}
+              {exclude_sql}
+            GROUP BY t1.cluster, t1.namespace, t1.alert_name, t1.target
+            ORDER BY frequency DESC, max_level DESC, t1.cluster ASC
             """
-            cursor.execute(stale_sql, [end_fmt, end_fmt, end_fmt, end_fmt, stale_days] + exclude_params)
-            stale_rows = cursor.fetchall()
+            detail_params = []
+            if has_resolved_at:
+                detail_params.extend([end_fmt, end_fmt])
+            detail_params.extend([start_fmt, end_fmt])
+            detail_params.extend(exclude_params)
+            cursor.execute(detail_sql, detail_params)
+            detail_rows = cursor.fetchall()
 
-        summary = {
-            "triggered_total": summary_row[0] or 0,
-            "resolved_by_month_end_total": summary_row[1] if recovery_metrics_available else None,
-            "unresolved_by_month_end_total": summary_row[2] if recovery_metrics_available else None,
-            "current_resolved_total": summary_row[3] if recovery_metrics_available else None,
-            "current_unresolved_total": summary_row[4] if recovery_metrics_available else None,
-            "avg_recovery_hours_by_month_end": round(summary_row[5], 2) if recovery_metrics_available and summary_row[5] is not None else None,
-            "active_systems": summary_row[6] or 0,
-            "recovery_metrics_available": recovery_metrics_available,
-        }
+            trend_sql = f"""
+            SELECT DATE_FORMAT(created_at, '%%d') as day, COUNT(*)
+            FROM {TABLE_NAME}
+            WHERE created_at BETWEEN %s AND %s
+              AND {first_status_filter_plain}
+              {exclude_sql.replace('t1.', '')}
+            GROUP BY day
+            ORDER BY day
+            """
+            cursor.execute(trend_sql, [start_fmt, end_fmt] + exclude_params)
+            trend_data = dict(cursor.fetchall())
 
-        systems_data = defaultdict(
-            lambda: {
-                "total": 0,
-                "resolved_by_month_end": 0,
-                "unresolved_by_month_end": 0,
-                "current_resolved": 0,
-                "current_unresolved": 0,
-                "levels": {4: 0, 3: 0, 2: 0, 1: 0},
-                "rows": [],
+            summary_sql = f"""
+            SELECT
+                COUNT(*) as triggered_total,
+                {summary_recovery_select}
+                COUNT(DISTINCT cluster) as active_systems
+            FROM {TABLE_NAME}
+            WHERE created_at BETWEEN %s AND %s
+              AND {first_status_filter_plain}
+              {exclude_sql.replace('t1.', '')}
+            """
+            summary_params = []
+            if recovery_metrics_available:
+                summary_params.extend([end_fmt, end_fmt, end_fmt])
+            summary_params.extend([start_fmt, end_fmt])
+            summary_params.extend(exclude_params)
+            cursor.execute(summary_sql, summary_params)
+            summary_row = cursor.fetchone() or (0, 0, 0, 0, 0, None, 0)
+
+            unresolved_sql = f"""
+            SELECT cluster, alert_name, target, level, starts_at
+            FROM {TABLE_NAME}
+            WHERE created_at BETWEEN %s AND %s
+              AND {first_status_filter_plain}
+              AND {current_unresolved_expr_plain}
+              {exclude_sql.replace('t1.', '')}
+            ORDER BY CAST(COALESCE(level, '0') AS UNSIGNED) DESC, created_at DESC
+            LIMIT 10
+            """
+            unresolved_rows = []
+            if recovery_metrics_available:
+                cursor.execute(unresolved_sql, [start_fmt, end_fmt] + exclude_params)
+                unresolved_rows = cursor.fetchall()
+
+            stale_rows = []
+            if recovery_metrics_available:
+                stale_sql = f"""
+                SELECT
+                    cluster,
+                    alert_name,
+                    target,
+                    level,
+                    starts_at,
+                    TIMESTAMPDIFF(DAY, starts_at, %s) as aging_days,
+                    key_info
+                FROM {TABLE_NAME}
+                WHERE {first_status_filter_plain}
+                  AND starts_at <= %s
+                  AND ({unresolved_by_month_end_expr_plain})
+                  AND TIMESTAMPDIFF(DAY, starts_at, %s) >= %s
+                  {exclude_sql.replace('t1.', '')}
+                ORDER BY aging_days DESC, CAST(COALESCE(level, '0') AS UNSIGNED) DESC, starts_at ASC
+                LIMIT 20
+                """
+                cursor.execute(stale_sql, [end_fmt, end_fmt, end_fmt, end_fmt, stale_days] + exclude_params)
+                stale_rows = cursor.fetchall()
+
+            summary = {
+                "triggered_total": summary_row[0] or 0,
+                "resolved_by_month_end_total": summary_row[1] if recovery_metrics_available else None,
+                "unresolved_by_month_end_total": summary_row[2] if recovery_metrics_available else None,
+                "current_resolved_total": summary_row[3] if recovery_metrics_available else None,
+                "current_unresolved_total": summary_row[4] if recovery_metrics_available else None,
+                "avg_recovery_hours_by_month_end": round(summary_row[5], 2) if recovery_metrics_available and summary_row[5] is not None else None,
+                "active_systems": summary_row[6] or 0,
+                "recovery_metrics_available": recovery_metrics_available,
             }
-        )
-        level_totals = {4: 0, 3: 0, 2: 0, 1: 0}
 
-        for row in detail_rows:
-            cluster = row[0]
-            frequency = row[7]
-            resolved_count = row[10]
-            unresolved_count = row[11]
-            current_resolved_count = row[12]
-            current_unresolved_count = row[13]
-            try:
-                level = int(row[3])
-            except (TypeError, ValueError):
-                level = 1
+            systems_data = defaultdict(
+                lambda: {
+                    "total": 0,
+                    "resolved_by_month_end": 0,
+                    "unresolved_by_month_end": 0,
+                    "current_resolved": 0,
+                    "current_unresolved": 0,
+                    "levels": {4: 0, 3: 0, 2: 0, 1: 0},
+                    "rows": [],
+                }
+            )
+            level_totals = {4: 0, 3: 0, 2: 0, 1: 0}
 
-            systems_data[cluster]["rows"].append(row)
-            systems_data[cluster]["total"] += frequency
-            systems_data[cluster]["resolved_by_month_end"] += resolved_count or 0
-            systems_data[cluster]["unresolved_by_month_end"] += unresolved_count or 0
-            systems_data[cluster]["current_resolved"] += current_resolved_count or 0
-            systems_data[cluster]["current_unresolved"] += current_unresolved_count or 0
-            systems_data[cluster]["levels"][level] += frequency
-            level_totals[level] += frequency
+            for row in detail_rows:
+                cluster = row[0]
+                frequency = row[7]
+                resolved_count = row[10]
+                unresolved_count = row[11]
+                current_resolved_count = row[12]
+                current_unresolved_count = row[13]
+                try:
+                    level = int(row[3])
+                except (TypeError, ValueError):
+                    level = 1
 
-        return {
-            "month_text": month_text,
-            "start_dt": start_dt,
-            "end_dt": end_dt,
-            "summary": summary,
-            "trend_data": trend_data,
-            "detail_rows": detail_rows,
-            "systems_data": systems_data,
-            "level_totals": level_totals,
-            "unresolved_rows": unresolved_rows,
-            "stale_rows": stale_rows,
-            "top_rows": detail_rows[:top_n],
-            "exclude_dates": exclude_dates,
-            "stale_days": stale_days,
-        }
+                systems_data[cluster]["rows"].append(row)
+                systems_data[cluster]["total"] += frequency
+                systems_data[cluster]["resolved_by_month_end"] += resolved_count or 0
+                systems_data[cluster]["unresolved_by_month_end"] += unresolved_count or 0
+                systems_data[cluster]["current_resolved"] += current_resolved_count or 0
+                systems_data[cluster]["current_unresolved"] += current_unresolved_count or 0
+                systems_data[cluster]["levels"][level] += frequency
+                level_totals[level] += frequency
+
+            return {
+                "month_text": month_text,
+                "start_dt": start_dt,
+                "end_dt": end_dt,
+                "summary": summary,
+                "trend_data": trend_data,
+                "detail_rows": detail_rows,
+                "systems_data": systems_data,
+                "level_totals": level_totals,
+                "unresolved_rows": unresolved_rows,
+                "stale_rows": stale_rows,
+                "top_rows": detail_rows[:top_n],
+                "exclude_dates": exclude_dates,
+                "stale_days": stale_days,
+            }
     finally:
         conn.close()
 
-
 def generate_trend_chart(trend_data, start_dt, end_dt):
-    plt = get_matplotlib_pyplot()
     days = []
     counts = []
     current_dt = start_dt
@@ -440,7 +430,7 @@ def build_overview_sentence(report_data):
         return (
             f"{start_dt.month}月{start_dt.day}日至{end_dt.month}月{end_dt.day}日，"
             f"监控系统累计产生告警 {summary['triggered_total']} 次。"
-            "由于当前数据库仍是旧结构，历史恢复数据未入库，本月恢复率和未清零情况暂无法准确计算。"
+            "当前数据库未提供完整恢复生命周期数据，本月恢复率和未清零情况暂无法准确计算。"
         )
 
     recovery_rate = 0
@@ -634,7 +624,7 @@ def generate_html(report_data, config_data, top_n):
     if not summary.get("recovery_metrics_available", False):
         html_parts.append(
             "<div class='overview-box' style='border-color:#d8c39b; color:#7d5b24;'>"
-            "提示：当前数据库仍是旧结构，仅保存触发告警，未保存恢复生命周期数据。"
+            "提示：当前数据库若缺少完整恢复生命周期数据，则恢复率、月末未清零、长期未清零清单将无法准确统计。"
             "因此本月恢复率、月末未清零、长期未清零清单暂不具备准确统计基础。"
             "</div>"
         )
@@ -688,7 +678,7 @@ def generate_html(report_data, config_data, top_n):
     html_parts.append("<div class='section'>")
     html_parts.append(f"<div class='section-title'>三、长期未恢复/未清零告警（持续至少 {stale_days} 天）</div>")
     if not summary.get("recovery_metrics_available", False):
-        html_parts.append("<div class='empty-box'>旧库没有恢复数据，暂时无法识别长期未清零告警。</div>")
+        html_parts.append("<div class='empty-box'>当前数据库缺少恢复数据，暂时无法识别长期未清零告警。</div>")
     elif stale_rows:
         html_parts.append(
             "<table class='data-table'><thead><tr><th>系统名称</th><th>告警项</th><th>对象</th><th>级别</th><th>开始时间</th><th>截至月末持续天数</th><th>核心信息</th></tr></thead><tbody>"
@@ -832,3 +822,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+

@@ -3,12 +3,12 @@ import base64
 import datetime
 import logging
 import os
-import sqlite3
 from collections import defaultdict
 from io import BytesIO
 
+from db_utils import get_db_connection, get_db_display_name, get_table_columns
 
-DB_FILE = "alerts.db"
+
 TABLE_NAME = "weekly_alerts"
 DEFAULT_PDF_FILE = "weekly_inspection_report_custom.pdf"
 DEFAULT_HTML_FILE = "weekly_inspection_report_custom.html"
@@ -83,11 +83,6 @@ def build_date_range(args):
     return start_dt, end_dt
 
 
-def get_table_columns(cursor, table_name):
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    return {row[1] for row in cursor.fetchall()}
-
-
 def format_percent(numerator, denominator):
     if not denominator:
         return "-"
@@ -136,189 +131,182 @@ def build_trend_chart(trend_data, start_dt, end_dt):
 
 
 def fetch_weekly_report(start_dt, end_dt, top_n, stale_days):
-    if not os.path.exists(DB_FILE):
-        raise FileNotFoundError(f"数据库文件不存在: {DB_FILE}")
-
     start_fmt = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_fmt = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
+    conn = get_db_connection()
     try:
-        columns = get_table_columns(cursor, TABLE_NAME)
-        recovery_metrics_available = {"status", "resolved_at"}.issubset(columns)
+        with conn.cursor() as cursor:
+            columns = get_table_columns(cursor, TABLE_NAME)
+            recovery_metrics_available = {"status", "resolved_at"}.issubset(columns)
 
-        detail_sql = f"""
-        SELECT
-            t1.cluster,
-            t1.namespace,
-            t1.alert_name,
-            MAX(CAST(COALESCE(t1.level, '0') AS INTEGER)) as max_level,
-            MAX(t1.metric_type) as metric_type,
-            t1.target,
-            (SELECT key_info
-               FROM {TABLE_NAME} t2
-              WHERE t2.cluster = t1.cluster
-                AND t2.namespace = t1.namespace
-                AND t2.alert_name = t1.alert_name
-                AND t2.target = t1.target
-              ORDER BY t2.starts_at DESC
-              LIMIT 1) as key_info,
-            (SELECT detail_info
-               FROM {TABLE_NAME} t3
-              WHERE t3.cluster = t1.cluster
-                AND t3.namespace = t1.namespace
-                AND t3.alert_name = t1.alert_name
-                AND t3.target = t1.target
-              ORDER BY t3.starts_at DESC
-              LIMIT 1) as detail_info,
-            COUNT(*) as frequency,
-            MIN(t1.starts_at) as first_seen,
-            MAX(t1.starts_at) as last_seen,
-            MAX(t1.created_at) as last_created_at,
-            SUM(CASE WHEN CAST(COALESCE(t1.level, '0') AS INTEGER) = 4 THEN 1 ELSE 0 END) as level4_count,
-            SUM(CASE WHEN CAST(COALESCE(t1.level, '0') AS INTEGER) >= 3 THEN 1 ELSE 0 END) as level3plus_count
-        FROM {TABLE_NAME} t1
-        WHERE t1.created_at BETWEEN ? AND ?
-        GROUP BY t1.cluster, t1.namespace, t1.alert_name, t1.target
-        ORDER BY max_level DESC, frequency DESC, t1.cluster ASC
-        """
-        cursor.execute(detail_sql, (start_fmt, end_fmt))
-        detail_rows = cursor.fetchall()
-
-        trend_sql = f"""
-        SELECT strftime('%m-%d', created_at) as day, COUNT(*)
-        FROM {TABLE_NAME}
-        WHERE created_at BETWEEN ? AND ?
-        GROUP BY day
-        ORDER BY day
-        """
-        cursor.execute(trend_sql, (start_fmt, end_fmt))
-        trend_data = dict(cursor.fetchall())
-
-        summary_sql = f"""
-        SELECT
-            COUNT(*) as total_alerts,
-            COUNT(DISTINCT cluster) as affected_systems,
-            SUM(CASE WHEN CAST(COALESCE(level, '0') AS INTEGER) = 4 THEN 1 ELSE 0 END) as urgent_total,
-            SUM(CASE WHEN CAST(COALESCE(level, '0') AS INTEGER) >= 3 THEN 1 ELSE 0 END) as severe_total
-        FROM {TABLE_NAME}
-        WHERE created_at BETWEEN ? AND ?
-        """
-        cursor.execute(summary_sql, (start_fmt, end_fmt))
-        summary_row = cursor.fetchone() or (0, 0, 0, 0)
-
-        summary = {
-            "total_alerts": summary_row[0] or 0,
-            "affected_systems": summary_row[1] or 0,
-            "urgent_total": summary_row[2] or 0,
-            "severe_total": summary_row[3] or 0,
-            "recovery_metrics_available": recovery_metrics_available,
-        }
-
-        if recovery_metrics_available:
-            recovery_sql = f"""
+            detail_sql = f"""
             SELECT
-                SUM(CASE
-                        WHEN resolved_at IS NOT NULL AND resolved_at != '' AND resolved_at <= ?
-                        THEN 1 ELSE 0
-                    END) as resolved_by_end,
-                SUM(CASE
-                        WHEN resolved_at IS NULL OR resolved_at = '' OR resolved_at > ?
-                        THEN 1 ELSE 0
-                    END) as unresolved_by_end,
-                AVG(CASE
-                        WHEN resolved_at IS NOT NULL AND resolved_at != '' AND resolved_at <= ?
-                         AND starts_at IS NOT NULL AND starts_at != ''
-                        THEN (julianday(resolved_at) - julianday(starts_at)) * 24
-                        ELSE NULL
-                    END) as avg_recovery_hours
-            FROM {TABLE_NAME}
-            WHERE created_at BETWEEN ? AND ?
+                t1.cluster,
+                t1.namespace,
+                t1.alert_name,
+                MAX(CAST(COALESCE(t1.level, '0') AS UNSIGNED)) as max_level,
+                MAX(t1.metric_type) as metric_type,
+                t1.target,
+                (SELECT key_info
+                   FROM {TABLE_NAME} t2
+                  WHERE t2.cluster = t1.cluster
+                    AND t2.namespace = t1.namespace
+                    AND t2.alert_name = t1.alert_name
+                    AND t2.target = t1.target
+                  ORDER BY t2.starts_at DESC
+                  LIMIT 1) as key_info,
+                (SELECT detail_info
+                   FROM {TABLE_NAME} t3
+                  WHERE t3.cluster = t1.cluster
+                    AND t3.namespace = t1.namespace
+                    AND t3.alert_name = t1.alert_name
+                    AND t3.target = t1.target
+                  ORDER BY t3.starts_at DESC
+                  LIMIT 1) as detail_info,
+                COUNT(*) as frequency,
+                MIN(t1.starts_at) as first_seen,
+                MAX(t1.starts_at) as last_seen,
+                MAX(t1.created_at) as last_created_at,
+                SUM(CASE WHEN CAST(COALESCE(t1.level, '0') AS UNSIGNED) = 4 THEN 1 ELSE 0 END) as level4_count,
+                SUM(CASE WHEN CAST(COALESCE(t1.level, '0') AS UNSIGNED) >= 3 THEN 1 ELSE 0 END) as level3plus_count
+            FROM {TABLE_NAME} t1
+            WHERE t1.created_at BETWEEN %s AND %s
+            GROUP BY t1.cluster, t1.namespace, t1.alert_name, t1.target
+            ORDER BY max_level DESC, frequency DESC, t1.cluster ASC
             """
-            cursor.execute(recovery_sql, (end_fmt, end_fmt, end_fmt, start_fmt, end_fmt))
-            recovery_row = cursor.fetchone() or (0, 0, None)
-            summary["resolved_by_end"] = recovery_row[0] or 0
-            summary["unresolved_by_end"] = recovery_row[1] or 0
-            summary["avg_recovery_hours"] = round(recovery_row[2], 2) if recovery_row[2] is not None else None
-            summary["recovery_rate"] = format_percent(summary["resolved_by_end"], summary["total_alerts"])
-        else:
-            summary["resolved_by_end"] = None
-            summary["unresolved_by_end"] = None
-            summary["avg_recovery_hours"] = None
-            summary["recovery_rate"] = "-"
+            cursor.execute(detail_sql, (start_fmt, end_fmt))
+            detail_rows = cursor.fetchall()
 
-        systems = defaultdict(
-            lambda: {
-                "total": 0,
-                "urgent": 0,
-                "severe": 0,
-                "rows": [],
+            trend_sql = f"""
+            SELECT DATE_FORMAT(created_at, '%%m-%%d') as day, COUNT(*)
+            FROM {TABLE_NAME}
+            WHERE created_at BETWEEN %s AND %s
+            GROUP BY day
+            ORDER BY day
+            """
+            cursor.execute(trend_sql, (start_fmt, end_fmt))
+            trend_data = dict(cursor.fetchall())
+
+            summary_sql = f"""
+            SELECT
+                COUNT(*) as total_alerts,
+                COUNT(DISTINCT cluster) as affected_systems,
+                SUM(CASE WHEN CAST(COALESCE(level, '0') AS UNSIGNED) = 4 THEN 1 ELSE 0 END) as urgent_total,
+                SUM(CASE WHEN CAST(COALESCE(level, '0') AS UNSIGNED) >= 3 THEN 1 ELSE 0 END) as severe_total
+            FROM {TABLE_NAME}
+            WHERE created_at BETWEEN %s AND %s
+            """
+            cursor.execute(summary_sql, (start_fmt, end_fmt))
+            summary_row = cursor.fetchone() or (0, 0, 0, 0)
+
+            summary = {
+                "total_alerts": summary_row[0] or 0,
+                "affected_systems": summary_row[1] or 0,
+                "urgent_total": summary_row[2] or 0,
+                "severe_total": summary_row[3] or 0,
+                "recovery_metrics_available": recovery_metrics_available,
             }
-        )
-        alert_names = defaultdict(int)
 
-        for row in detail_rows:
-            cluster = row[0]
-            frequency = row[8]
-            systems[cluster]["total"] += frequency
-            systems[cluster]["urgent"] += row[12]
-            systems[cluster]["severe"] += row[13]
-            systems[cluster]["rows"].append(row)
-            alert_names[row[2]] += frequency
+            if recovery_metrics_available:
+                recovery_sql = f"""
+                SELECT
+                    SUM(CASE
+                            WHEN resolved_at IS NOT NULL AND resolved_at <= %s
+                            THEN 1 ELSE 0
+                        END) as resolved_by_end,
+                    SUM(CASE
+                            WHEN resolved_at IS NULL OR resolved_at > %s
+                            THEN 1 ELSE 0
+                        END) as unresolved_by_end,
+                    AVG(CASE
+                            WHEN resolved_at IS NOT NULL AND resolved_at <= %s
+                             AND starts_at IS NOT NULL
+                            THEN TIMESTAMPDIFF(SECOND, starts_at, resolved_at) / 3600
+                            ELSE NULL
+                        END) as avg_recovery_hours
+                FROM {TABLE_NAME}
+                WHERE created_at BETWEEN %s AND %s
+                """
+                cursor.execute(recovery_sql, (end_fmt, end_fmt, end_fmt, start_fmt, end_fmt))
+                recovery_row = cursor.fetchone() or (0, 0, None)
+                summary["resolved_by_end"] = recovery_row[0] or 0
+                summary["unresolved_by_end"] = recovery_row[1] or 0
+                summary["avg_recovery_hours"] = round(recovery_row[2], 2) if recovery_row[2] is not None else None
+                summary["recovery_rate"] = format_percent(summary["resolved_by_end"], summary["total_alerts"])
+            else:
+                summary["resolved_by_end"] = None
+                summary["unresolved_by_end"] = None
+                summary["avg_recovery_hours"] = None
+                summary["recovery_rate"] = "-"
 
-        top_alerts = sorted(detail_rows, key=lambda row: (row[3], row[8]), reverse=True)[:top_n]
-        top_systems = sorted(systems.items(), key=lambda item: item[1]["total"], reverse=True)[:top_n]
-        urgent_focus = [row for row in detail_rows if row[3] >= 3][:top_n]
-
-        stale_rows = []
-        if recovery_metrics_available:
-            stale_sql = f"""
-            SELECT
-                cluster,
-                alert_name,
-                target,
-                CAST(COALESCE(level, '0') AS INTEGER) as level_num,
-                starts_at,
-                CAST(julianday(?) - julianday(starts_at) AS INTEGER) as aging_days,
-                key_info
-            FROM {TABLE_NAME}
-            WHERE starts_at IS NOT NULL
-              AND starts_at != ''
-              AND starts_at <= ?
-              AND (resolved_at IS NULL OR resolved_at = '' OR resolved_at > ?)
-              AND CAST(julianday(?) - julianday(starts_at) AS INTEGER) >= ?
-            ORDER BY aging_days DESC, level_num DESC, starts_at ASC
-            LIMIT ?
-            """
-            threshold_start = (end_dt - datetime.timedelta(days=stale_days)).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute(
-                stale_sql,
-                (end_fmt, threshold_start, end_fmt, end_fmt, stale_days, top_n),
+            systems = defaultdict(
+                lambda: {
+                    "total": 0,
+                    "urgent": 0,
+                    "severe": 0,
+                    "rows": [],
+                }
             )
-            stale_rows = cursor.fetchall()
 
-        peak_day = None
-        if trend_data:
-            peak_day = max(trend_data.items(), key=lambda item: item[1])
+            for row in detail_rows:
+                cluster = row[0]
+                frequency = row[8]
+                systems[cluster]["total"] += frequency
+                systems[cluster]["urgent"] += row[12]
+                systems[cluster]["severe"] += row[13]
+                systems[cluster]["rows"].append(row)
 
-        report_data = {
-            "start_dt": start_dt,
-            "end_dt": end_dt,
-            "summary": summary,
-            "trend_data": trend_data,
-            "detail_rows": detail_rows,
-            "top_alerts": top_alerts,
-            "top_systems": top_systems,
-            "urgent_focus": urgent_focus,
-            "stale_rows": stale_rows,
-            "systems": systems,
-            "peak_day": peak_day,
-            "stale_days": stale_days,
-        }
-        report_data["action_items"] = build_action_items(report_data)
-        return report_data
+            top_alerts = sorted(detail_rows, key=lambda row: (row[3], row[8]), reverse=True)[:top_n]
+            top_systems = sorted(systems.items(), key=lambda item: item[1]["total"], reverse=True)[:top_n]
+            urgent_focus = [row for row in detail_rows if row[3] >= 3][:top_n]
+
+            stale_rows = []
+            if recovery_metrics_available:
+                stale_sql = f"""
+                SELECT
+                    cluster,
+                    alert_name,
+                    target,
+                    CAST(COALESCE(level, '0') AS UNSIGNED) as level_num,
+                    starts_at,
+                    TIMESTAMPDIFF(DAY, starts_at, %s) as aging_days,
+                    key_info
+                FROM {TABLE_NAME}
+                WHERE starts_at IS NOT NULL
+                  AND starts_at <= %s
+                  AND (resolved_at IS NULL OR resolved_at > %s)
+                  AND TIMESTAMPDIFF(DAY, starts_at, %s) >= %s
+                ORDER BY aging_days DESC, level_num DESC, starts_at ASC
+                LIMIT %s
+                """
+                threshold_start = (end_dt - datetime.timedelta(days=stale_days)).strftime("%Y-%m-%d %H:%M:%S")
+                cursor.execute(
+                    stale_sql,
+                    (end_fmt, threshold_start, end_fmt, end_fmt, stale_days, top_n),
+                )
+                stale_rows = cursor.fetchall()
+
+            peak_day = None
+            if trend_data:
+                peak_day = max(trend_data.items(), key=lambda item: item[1])
+
+            report_data = {
+                "start_dt": start_dt,
+                "end_dt": end_dt,
+                "summary": summary,
+                "trend_data": trend_data,
+                "detail_rows": detail_rows,
+                "top_alerts": top_alerts,
+                "top_systems": top_systems,
+                "urgent_focus": urgent_focus,
+                "stale_rows": stale_rows,
+                "systems": systems,
+                "peak_day": peak_day,
+                "stale_days": stale_days,
+            }
+            report_data["action_items"] = build_action_items(report_data)
+            return report_data
     finally:
         conn.close()
 
@@ -595,3 +583,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -3,3 +3,4 @@ matplotlib==3.5.3
 WeasyPrint==52.5
 tinycss2==1.1.1
 cffi==1.15.1
+PyMySQL==1.1.1

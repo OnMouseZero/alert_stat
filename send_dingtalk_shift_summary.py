@@ -6,15 +6,15 @@ import datetime
 import json
 import logging
 import os
-import sqlite3
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+from db_utils import get_db_connection, get_db_display_name
+
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = os.getenv("ALERT_DB_PATH", str(BASE_DIR / "alerts.db"))
 LOG_FILE = os.getenv("SHIFT_SUMMARY_LOG_FILE", str(BASE_DIR / "send_dingtalk_shift_summary.log"))
 WEBHOOK_URL = os.getenv(
     "DINGTALK_WEBHOOK_URL",
@@ -36,7 +36,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="发送早晚班告警统计到钉钉机器人")
     parser.add_argument("--slot", choices=["auto", "morning", "afternoon"], default="auto", help="统计班次")
     parser.add_argument("--run-at", default="", help="指定运行时间，格式如 2026-05-21T09:00:00")
-    parser.add_argument("--db-path", default=DB_PATH, help="SQLite 数据库路径")
     parser.add_argument("--webhook", default=WEBHOOK_URL, help="钉钉机器人 webhook")
     parser.add_argument("--dry-run", action="store_true", help="只打印 markdown，不真正发送")
     parser.add_argument("--log-file", default=LOG_FILE, help="日志文件路径")
@@ -109,59 +108,55 @@ def init_hour_buckets(start_dt, end_dt):
     return buckets
 
 
-def fetch_summary(db_path, start_dt, end_dt):
-    if not os.path.exists(db_path):
-        raise FileNotFoundError(f"数据库文件不存在: {db_path}")
-
+def fetch_summary(start_dt, end_dt):
     start_text = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_text = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
+    conn = get_db_connection()
     try:
-        summary_sql = f"""
-        SELECT
-            COUNT(*) as total_count,
-            SUM(CASE WHEN level = '4' THEN 1 ELSE 0 END) as lv4_count,
-            SUM(CASE WHEN level = '3' THEN 1 ELSE 0 END) as lv3_count,
-            SUM(CASE WHEN level = '2' THEN 1 ELSE 0 END) as lv2_count,
-            SUM(CASE WHEN level = '1' THEN 1 ELSE 0 END) as lv1_count
-        FROM {TABLE_NAME}
-        WHERE created_at BETWEEN ? AND ?
-        """
-        cursor.execute(summary_sql, (start_text, end_text))
-        row = cursor.fetchone() or (0, 0, 0, 0, 0)
+        with conn.cursor() as cursor:
+            summary_sql = f"""
+            SELECT
+                COUNT(*) as total_count,
+                SUM(CASE WHEN level = '4' THEN 1 ELSE 0 END) as lv4_count,
+                SUM(CASE WHEN level = '3' THEN 1 ELSE 0 END) as lv3_count,
+                SUM(CASE WHEN level = '2' THEN 1 ELSE 0 END) as lv2_count,
+                SUM(CASE WHEN level = '1' THEN 1 ELSE 0 END) as lv1_count
+            FROM {TABLE_NAME}
+            WHERE created_at BETWEEN %s AND %s
+            """
+            cursor.execute(summary_sql, (start_text, end_text))
+            row = cursor.fetchone() or (0, 0, 0, 0, 0)
 
-        hourly_sql = f"""
-        SELECT substr(created_at, 1, 13) as hour_key, COUNT(*)
-        FROM {TABLE_NAME}
-        WHERE created_at BETWEEN ? AND ?
-        GROUP BY hour_key
-        ORDER BY hour_key
-        """
-        cursor.execute(hourly_sql, (start_text, end_text))
-        hourly_rows = cursor.fetchall()
-
-        hourly_map = {item[0]: item[1] for item in hourly_rows}
-        hourly_distribution = []
-        for bucket_dt, _ in init_hour_buckets(start_dt, end_dt):
-            key = bucket_dt.strftime("%Y-%m-%d %H")
-            label = bucket_dt.strftime("%m-%d %H:00")
-            hourly_distribution.append((label, hourly_map.get(key, 0)))
-
-        return {
-            "total_count": row[0] or 0,
-            "level_counts": {
-                "4": row[1] or 0,
-                "3": row[2] or 0,
-                "2": row[3] or 0,
-                "1": row[4] or 0,
-            },
-            "hourly_distribution": hourly_distribution,
-        }
+            hourly_sql = f"""
+            SELECT DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H') as hour_key, COUNT(*)
+            FROM {TABLE_NAME}
+            WHERE created_at BETWEEN %s AND %s
+            GROUP BY hour_key
+            ORDER BY hour_key
+            """
+            cursor.execute(hourly_sql, (start_text, end_text))
+            hourly_rows = cursor.fetchall()
     finally:
         conn.close()
+
+    hourly_map = {item[0]: item[1] for item in hourly_rows}
+    hourly_distribution = []
+    for bucket_dt, _ in init_hour_buckets(start_dt, end_dt):
+        key = bucket_dt.strftime("%Y-%m-%d %H")
+        label = bucket_dt.strftime("%m-%d %H:00")
+        hourly_distribution.append((label, hourly_map.get(key, 0)))
+
+    return {
+        "total_count": row[0] or 0,
+        "level_counts": {
+            "4": row[1] or 0,
+            "3": row[2] or 0,
+            "2": row[3] or 0,
+            "1": row[4] or 0,
+        },
+        "hourly_distribution": hourly_distribution,
+    }
 
 
 def format_markdown_table(headers, rows):
@@ -265,11 +260,11 @@ def main():
         now_dt.strftime("%Y-%m-%d %H:%M:%S"),
         start_dt.strftime("%Y-%m-%d %H:%M:%S"),
         end_dt.strftime("%Y-%m-%d %H:%M:%S"),
-        args.db_path,
+        get_db_display_name(),
         args.dry_run,
     )
 
-    summary_data = fetch_summary(args.db_path, start_dt, end_dt)
+    summary_data = fetch_summary(start_dt, end_dt)
     markdown_text = build_markdown(slot, title, start_dt, end_dt, summary_data)
 
     logger.info(

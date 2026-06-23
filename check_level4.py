@@ -5,15 +5,15 @@ import argparse
 import logging
 import os
 import smtplib
-import sqlite3
 import time
 from email.header import Header
 from email.mime.text import MIMEText
 from pathlib import Path
 
+from db_utils import get_db_connection, get_db_display_name
+
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = os.getenv("ALERT_DB_PATH", str(BASE_DIR / "alerts.db"))
 TABLE_NAME = "weekly_alerts"
 SENT_FILE = os.getenv("ALERT_SENT_FILE", str(BASE_DIR / "sent_level4_ids.txt"))
 LOG_FILE = os.getenv("ALERT_LOG_FILE", str(BASE_DIR / "check_level4.log"))
@@ -83,31 +83,29 @@ def save_sent_id(alert_id):
 
 
 def query_level4_alerts(lookback_hours):
-    if not os.path.exists(DB_PATH):
-        raise FileNotFoundError(f"数据库文件不存在: {DB_PATH}")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = f"""
+            SELECT id, alert_name, cluster, namespace, level,
+                   metric_type, target, key_info, detail_info,
+                   starts_at, created_at
+            FROM {TABLE_NAME}
+            WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+              AND COALESCE(first_status, 'firing') = 'firing'
+              AND COALESCE(status, 'firing') = 'firing'
+              AND level IN ('4', 'emergency', 'critical')
+            ORDER BY id DESC
+            """
+            cursor.execute(sql, (lookback_hours,))
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    sql = f"""
-    SELECT id, alert_name, cluster, namespace, level,
-           metric_type, target, key_info, detail_info,
-           starts_at, created_at
-    FROM {TABLE_NAME}
-    WHERE datetime(created_at) >= datetime('now', ?)
-      AND COALESCE(first_status, 'firing') = 'firing'
-      AND COALESCE(status, 'firing') = 'firing'
-      AND level IN ('4', 'emergency', 'critical')
-    ORDER BY id DESC
-    """
-
-    cursor.execute(sql, (f"-{lookback_hours} hour",))
-    rows = cursor.fetchall()
-    conn.close()
     logger.info(
         "查询到等级4未恢复告警 %s 条，数据库=%s，回看窗口=%s 小时",
         len(rows),
-        DB_PATH,
+        get_db_display_name(),
         lookback_hours,
     )
     return rows
@@ -183,7 +181,7 @@ def send_mail(row, dry_run=False):
 def run_once(args):
     sent_ids = load_sent_ids()
     rows = query_level4_alerts(args.lookback_hours)
-    logger.info("本次开始处理，待发送候选=%s，数据库=%s", len(rows), DB_PATH)
+    logger.info("本次开始处理，待发送候选=%s，数据库=%s", len(rows), get_db_display_name())
 
     sent_count = 0
     skipped_count = 0
@@ -217,7 +215,7 @@ def main():
         args.interval,
         args.lookback_hours,
         args.dry_run,
-        DB_PATH,
+        get_db_display_name(),
         SENT_FILE,
     )
 

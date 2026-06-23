@@ -1,15 +1,15 @@
 import datetime
 import logging
 import os
-import sqlite3
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from flask import Flask, redirect, render_template, request, url_for
 
+from db_utils import format_db_value, get_db_connection, get_db_display_name, init_db_schema, row_to_dict
+
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_FILE = str(Path(os.getenv("ALERT_DB_PATH", str(BASE_DIR / "alerts.db"))))
 PORT = int(os.getenv("ALERT_DASHBOARD_PORT", "5002"))
 RECOVERY_STATS_START_TEXT = os.getenv("ALERT_RECOVERY_STATS_START", "2026-06-01")
 LOG_DIR = Path(os.getenv("ALERT_DASHBOARD_LOG_DIR", str(BASE_DIR / "logs")))
@@ -50,37 +50,8 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+init_db_schema(logger)
 
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def column_exists(cursor, table_name, column_name):
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    return any(row[1] == column_name for row in cursor.fetchall())
-
-
-def ensure_column(cursor, table_name, column_name, definition):
-    if not column_exists(cursor, table_name, column_name):
-        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
-
-
-def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        ensure_column(cursor, "weekly_alerts", "remark", "TEXT")
-        ensure_column(cursor, "weekly_alerts", "remark_updated_at", "TEXT")
-        conn.commit()
-    finally:
-        conn.close()
-
-
-# Ensure schema upgrades are applied both for direct execution and Gunicorn import.
-init_db()
 
 def parse_dashboard_date(raw_value):
     if not raw_value:
@@ -107,8 +78,8 @@ def compute_duration_text(start_text, end_text):
         return "-"
 
     try:
-        start_dt = datetime.datetime.strptime(start_text, "%Y-%m-%d %H:%M:%S")
-        end_dt = datetime.datetime.strptime(end_text, "%Y-%m-%d %H:%M:%S")
+        start_dt = datetime.datetime.strptime(str(start_text), "%Y-%m-%d %H:%M:%S")
+        end_dt = datetime.datetime.strptime(str(end_text), "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError):
         return "-"
 
@@ -130,7 +101,7 @@ def compute_duration_text(start_text, end_text):
 def serialize_alert_rows(rows, now_text, recovery_stats_start_text):
     records = []
     for row in rows:
-        record = dict(row)
+        record = row_to_dict(row)
         current_status = record.get("status") or "firing"
         created_at = record.get("created_at") or ""
         record["recovery_in_scope"] = created_at >= recovery_stats_start_text
@@ -159,14 +130,14 @@ def fetch_dashboard_data(target_date):
     summary_sql = """
     SELECT
         COUNT(*) AS total_count,
-        SUM(CASE WHEN created_at >= ? AND COALESCE(status, 'firing') = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
-        SUM(CASE WHEN created_at >= ? AND COALESCE(status, 'firing') != 'resolved' THEN 1 ELSE 0 END) AS unresolved_count,
+        SUM(CASE WHEN created_at >= %s AND COALESCE(status, 'firing') = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
+        SUM(CASE WHEN created_at >= %s AND COALESCE(status, 'firing') != 'resolved' THEN 1 ELSE 0 END) AS unresolved_count,
         SUM(CASE WHEN level = '4' THEN 1 ELSE 0 END) AS level4_count,
         SUM(CASE WHEN level = '3' THEN 1 ELSE 0 END) AS level3_count,
         SUM(CASE WHEN level = '2' THEN 1 ELSE 0 END) AS level2_count,
         SUM(CASE WHEN level = '1' THEN 1 ELSE 0 END) AS level1_count
     FROM weekly_alerts
-    WHERE created_at BETWEEN ? AND ?
+    WHERE created_at BETWEEN %s AND %s
     """
 
     selected_day_alerts_sql = """
@@ -175,10 +146,10 @@ def fetch_dashboard_data(target_date):
         key_info, detail_info, first_status, status, starts_at, ends_at,
         created_at, updated_at, resolved_at, remark, remark_updated_at
     FROM weekly_alerts
-    WHERE created_at BETWEEN ? AND ?
+    WHERE created_at BETWEEN %s AND %s
     ORDER BY
         CASE WHEN COALESCE(status, 'firing') != 'resolved' THEN 0 ELSE 1 END,
-        CAST(COALESCE(level, '0') AS INTEGER) DESC,
+        CAST(COALESCE(level, '0') AS UNSIGNED) DESC,
         created_at DESC
     LIMIT 200
     """
@@ -189,49 +160,49 @@ def fetch_dashboard_data(target_date):
         key_info, detail_info, first_status, status, starts_at, ends_at,
         created_at, updated_at, resolved_at, remark, remark_updated_at
     FROM weekly_alerts
-    WHERE created_at < ?
-      AND created_at >= ?
+    WHERE created_at < %s
+      AND created_at >= %s
       AND COALESCE(first_status, 'firing') = 'firing'
       AND COALESCE(status, 'firing') != 'resolved'
-    ORDER BY CAST(COALESCE(level, '0') AS INTEGER) DESC, created_at ASC
+    ORDER BY CAST(COALESCE(level, '0') AS UNSIGNED) DESC, created_at ASC
     LIMIT 200
     """
 
     historical_unresolved_count_sql = """
     SELECT COUNT(*) AS total_count
     FROM weekly_alerts
-    WHERE created_at < ?
-      AND created_at >= ?
+    WHERE created_at < %s
+      AND created_at >= %s
       AND COALESCE(first_status, 'firing') = 'firing'
       AND COALESCE(status, 'firing') != 'resolved'
     """
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(dict_cursor=True)
     try:
-        cursor.execute(summary_sql, (recovery_stats_start, recovery_stats_start, start_text, end_text))
-        summary_row = cursor.fetchone()
+        with conn.cursor() as cursor:
+            cursor.execute(summary_sql, (recovery_stats_start, recovery_stats_start, start_text, end_text))
+            summary_row = cursor.fetchone() or {}
 
-        cursor.execute(selected_day_alerts_sql, (start_text, end_text))
-        selected_day_rows = cursor.fetchall()
+            cursor.execute(selected_day_alerts_sql, (start_text, end_text))
+            selected_day_rows = cursor.fetchall()
 
-        cursor.execute(historical_unresolved_sql, (start_text, recovery_stats_start))
-        historical_rows = cursor.fetchall()
+            cursor.execute(historical_unresolved_sql, (start_text, recovery_stats_start))
+            historical_rows = cursor.fetchall()
 
-        cursor.execute(historical_unresolved_count_sql, (start_text, recovery_stats_start))
-        historical_unresolved_count_row = cursor.fetchone()
+            cursor.execute(historical_unresolved_count_sql, (start_text, recovery_stats_start))
+            historical_unresolved_count_row = cursor.fetchone() or {}
     finally:
         conn.close()
 
     summary = {
-        "total_count": summary_row["total_count"] or 0,
-        "resolved_count": summary_row["resolved_count"] or 0,
-        "unresolved_count": summary_row["unresolved_count"] or 0,
-        "historical_unresolved_count": historical_unresolved_count_row["total_count"] or 0,
-        "level4_count": summary_row["level4_count"] or 0,
-        "level3_count": summary_row["level3_count"] or 0,
-        "level2_count": summary_row["level2_count"] or 0,
-        "level1_count": summary_row["level1_count"] or 0,
+        "total_count": summary_row.get("total_count") or 0,
+        "resolved_count": summary_row.get("resolved_count") or 0,
+        "unresolved_count": summary_row.get("unresolved_count") or 0,
+        "historical_unresolved_count": historical_unresolved_count_row.get("total_count") or 0,
+        "level4_count": summary_row.get("level4_count") or 0,
+        "level3_count": summary_row.get("level3_count") or 0,
+        "level2_count": summary_row.get("level2_count") or 0,
+        "level1_count": summary_row.get("level1_count") or 0,
     }
 
     return {
@@ -270,16 +241,16 @@ def save_remark():
         return redirect(url_for("dashboard", date=selected_date or datetime.date.today().strftime("%Y-%m-%d")))
 
     conn = get_db_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute(
-            """
-            UPDATE weekly_alerts
-            SET remark = ?, remark_updated_at = ?
-            WHERE id = ?
-            """,
-            (remark, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), int(alert_id)),
-        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE weekly_alerts
+                SET remark = %s, remark_updated_at = %s
+                WHERE id = %s
+                """,
+                (remark, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), int(alert_id)),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -289,5 +260,5 @@ def save_remark():
 
 
 if __name__ == "__main__":
-    logger.info("🚀 告警看板服务启动（开发模式），监听协议: http, 端口: %s, db=%s", PORT, DB_FILE)
+    logger.info("🚀 告警看板服务启动（开发模式），监听协议: http, 端口: %s, db=%s", PORT, get_db_display_name())
     app.run(host="0.0.0.0", port=PORT)
