@@ -385,6 +385,7 @@ def fetch_monthly_report(month_text, exclude_dates, top_n, stale_days):
         conn.close()
 
 def generate_trend_chart(trend_data, start_dt, end_dt):
+    plt = get_matplotlib_pyplot()
     days = []
     counts = []
     current_dt = start_dt
@@ -822,6 +823,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
